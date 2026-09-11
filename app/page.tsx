@@ -23,6 +23,7 @@ import {
   type PlatformKey,
   type Severity,
 } from "@/lib/watchtower";
+import { VulnerabilityTicker } from "@/components/vulnerability-ticker";
 
 type FeedMode = "demo" | "live" | "fallback" | "pending";
 
@@ -240,6 +241,18 @@ export default function Home() {
     setAnnouncement("Finding marked as reviewed.");
   }
 
+  function focusFinding(id: string) {
+    setSelectedPlatform("all");
+    setExpandedId(id);
+    setTechnicalId(null);
+    window.setTimeout(() => {
+      document.getElementById(`finding-${id}`)?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "center",
+      });
+    }, 0);
+  }
+
   return (
     <main className="watchtower-shell">
       <header className="topbar">
@@ -274,6 +287,12 @@ export default function Home() {
       </header>
 
       <div className="page-wrap">
+        <VulnerabilityTicker
+          findings={findings.filter((finding) => !reviewedIds.has(finding.id))}
+          mode={mode}
+          onSelectFinding={focusFinding}
+        />
+
         <section className="intro-row" aria-labelledby="page-title">
           <div>
             <div className="eyebrow"><Activity size={14} aria-hidden="true" /> Threat review surface</div>
@@ -383,7 +402,7 @@ export default function Home() {
                 const technicalOpen = technicalId === finding.id;
                 const platform = PLATFORM_META[finding.platform];
                 return (
-                  <article key={finding.id} className={`finding-card ${expanded ? "finding-card-expanded" : ""}`}>
+                  <article id={`finding-${finding.id}`} key={finding.id} className={`finding-card ${expanded ? "finding-card-expanded" : ""}`}>
                     <button
                       className="finding-trigger"
                       type="button"

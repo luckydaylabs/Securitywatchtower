@@ -137,6 +137,7 @@ a { color: inherit; }
 .refresh-button:hover { border-color: rgba(203, 225, 246, 0.6); background: rgba(255, 255, 255, 0.12); }
 
 .refresh-button:focus-visible, .platform-card:focus-visible, .finding-trigger:focus-visible,
+.ticker-item:focus-visible,
 .technical-toggle:focus-visible, .review-button:focus-visible, .clear-filter:focus-visible,
 .empty-state button:focus-visible, .error-state button:focus-visible, .source-list a:focus-visible {
   outline: 3px solid rgba(72, 137, 231, 0.34);
@@ -144,6 +145,59 @@ a { color: inherit; }
 }
 
 .page-wrap { width: min(1240px, calc(100% - 48px)); margin: 0 auto; padding: 47px 0 32px; }
+
+.vulnerability-ticker {
+  min-height: 53px;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  margin-bottom: 28px;
+  border: 1px solid #cbd9e6;
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 6px 16px rgba(18, 47, 72, 0.045);
+}
+
+.ticker-label {
+  min-width: 166px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 15px;
+  border-right: 1px solid #d6e1eb;
+  background: #edf5fd;
+  color: #315b83;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ticker-label-icon { display: inline-flex; color: var(--red); }
+.ticker-count { min-width: 21px; padding: 3px 6px; border-radius: 999px; background: #ffffff; color: #315b83; font-size: 10px; line-height: 1; text-align: center; }
+.ticker-window { min-width: 0; flex: 1; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.ticker-window::-webkit-scrollbar { display: none; }
+.ticker-track { min-width: max-content; min-height: 52px; display: flex; align-items: center; }
+.ticker-track-loop { animation: ticker-scroll 38s linear infinite; }
+.vulnerability-ticker:hover .ticker-track-loop, .vulnerability-ticker:focus-within .ticker-track-loop { animation-play-state: paused; }
+.ticker-set { display: flex; align-items: center; gap: 9px; padding: 0 9px; }
+.ticker-item { min-height: 34px; display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid #e0e8f0; border-radius: 8px; background: #fbfdff; color: #52697c; text-align: left; white-space: nowrap; transition: border-color 150ms ease, background 150ms ease, color 150ms ease; }
+button.ticker-item:hover { border-color: #a9c6e5; background: #f2f8ff; color: #275d99; }
+.ticker-severity { padding: 3px 5px; border-radius: 4px; font-size: 9px; font-weight: 800; letter-spacing: 0.06em; line-height: 1; }
+.ticker-severity-critical { background: var(--red-soft); color: var(--red); }
+.ticker-severity-high { background: #fff0df; color: #a55b08; }
+.ticker-severity-medium { background: var(--yellow-soft); color: var(--yellow); }
+.ticker-severity-low { background: var(--green-soft); color: var(--green); }
+.ticker-platform { color: #7a8b9a; font-size: 11px; font-weight: 750; }
+.ticker-divider { color: #c1ccd5; font-size: 12px; }
+.ticker-item-title { max-width: 330px; overflow: hidden; color: #304b62; font-size: 12px; font-weight: 680; text-overflow: ellipsis; }
+.ticker-empty { display: inline-flex; align-items: center; min-height: 52px; padding: 0 15px; color: var(--muted); font-size: 12px; }
+.ticker-status { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; padding: 0 14px 0 8px; color: #758899; font-size: 10px; font-weight: 780; letter-spacing: 0.07em; text-transform: uppercase; }
+.ticker-status-dot { width: 6px; height: 6px; border-radius: 999px; background: #8ea2b4; }
+.vulnerability-ticker-live .ticker-status { color: var(--green); }
+.vulnerability-ticker-live .ticker-status-dot { background: var(--green); box-shadow: 0 0 0 4px rgba(23, 128, 90, 0.1); }
+.vulnerability-ticker-pending .ticker-status { color: #376b9c; }
+.vulnerability-ticker-pending .ticker-status-dot { background: var(--blue); animation: ticker-status-pulse 1.5s ease-in-out infinite; }
 
 .intro-row { display: flex; align-items: end; justify-content: space-between; gap: 28px; margin-bottom: 26px; }
 
@@ -257,6 +311,8 @@ h2 { margin-bottom: 0; font-size: 25px; font-weight: 760; letter-spacing: -0.035
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes ticker-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+@keyframes ticker-status-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
@@ -274,6 +330,14 @@ h2 { margin-bottom: 0; font-size: 25px; font-weight: 760; letter-spacing: -0.035
 @media (max-width: 600px) {
   .topbar-inner, .page-wrap { width: calc(100% - 28px); }
   .page-wrap { padding-top: 34px; }
+  .vulnerability-ticker { min-height: 49px; margin-bottom: 24px; }
+  .ticker-label { min-width: 128px; gap: 7px; padding: 0 10px; letter-spacing: 0.06em; }
+  .ticker-label-copy { font-size: 10px; }
+  .ticker-track { min-height: 48px; }
+  .ticker-set { gap: 7px; padding: 0 7px; }
+  .ticker-item { min-height: 32px; padding: 5px 8px; gap: 6px; }
+  .ticker-item-title { max-width: 235px; font-size: 11px; }
+  .ticker-status { display: none; }
   .brand-name { font-size: 14px; }
   .topbar-status { font-size: 12px; }
   .topbar-divider { margin: 0 2px; }
