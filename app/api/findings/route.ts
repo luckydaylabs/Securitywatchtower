@@ -344,7 +344,7 @@ async function fetchWithTimeout(url: string, init: RequestInit) {
       ...init,
       signal: controller.signal,
       cache: "no-store",
-      redirect: "error",
+      redirect: "manual",
     });
   } catch (error) {
     if (controller.signal.aborted) throw new Error("Nimble request timed out.");
