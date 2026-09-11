@@ -1,5 +1,4 @@
 import { DEMO_FINDINGS, type Finding } from "@/lib/watchtower";
-import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
@@ -10,6 +9,7 @@ const NIMBLE_REQUEST_TIMEOUT_MS = 7_000;
 const NIMBLE_RUN_WAIT_MS = 24_000;
 const NIMBLE_POLL_INTERVAL_MS = 1_200;
 const MAX_FINDINGS = 50;
+const AUTOMATION_USER_AGENT = /(?:bot|crawler|spider|scraper|curl|wget|python|httpx|aiohttp|scrapy|go-http-client|libwww|headless|phantomjs|selenium|playwright|puppeteer)/i;
 const TRUSTED_SOURCE_DOMAINS = [
   "support.apple.com",
   "msrc.microsoft.com",
@@ -108,6 +108,32 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { "Cache-Control": "no-store" },
   });
+}
+
+function isAllowedBrowserRefresh(request: Request) {
+  const userAgent = request.headers.get("user-agent")?.trim();
+  if (!userAgent || AUTOMATION_USER_AGENT.test(userAgent)) return false;
+
+  const fetchSite = request.headers.get("sec-fetch-site")?.trim();
+  if (fetchSite && !["same-origin", "same-site"].includes(fetchSite)) return false;
+
+  const fetchDestination = request.headers.get("sec-fetch-dest")?.trim();
+  if (fetchDestination && fetchDestination !== "empty") return false;
+
+  const requestOrigin = new URL(request.url).origin;
+  const origin = request.headers.get("origin")?.trim();
+  if (origin && origin !== requestOrigin) return false;
+
+  const referer = request.headers.get("referer")?.trim();
+  if (referer) {
+    try {
+      if (new URL(referer).origin !== requestOrigin) return false;
+    } catch {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function fallback(message: string, mode: "demo" | "fallback" = "fallback") {
@@ -410,7 +436,7 @@ function runNimbleAgentOnce() {
   return activeNimbleRun;
 }
 
-export async function POST() {
+export async function POST(request: Request) {
   const config = getNimbleConfig();
   if (!config) {
     return fallback(
@@ -419,10 +445,10 @@ export async function POST() {
     );
   }
 
-  if (!(await getChatGPTUser())) {
+  if (!isAllowedBrowserRefresh(request)) {
     return jsonResponse(
-      { message: "Sign in to refresh security findings.", mode: "fallback" },
-      401,
+      { message: "Refresh is available from a normal browser session.", mode: "fallback" },
+      403,
     );
   }
 
