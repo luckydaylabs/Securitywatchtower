@@ -29,7 +29,9 @@ Local tool usage metrics are disabled by default. Set `WRANGLER_SEND_METRICS=tru
 
 ## Nimble Agent Feed
 
-The active findings route uses Nimble Web Search Agent API V2 from the server-only POST /api/findings route. It starts a named or fixed-agent run, polls until the run is complete, retrieves the structured result, preserves safe trust-source metadata, and validates every finding before returning it to the dashboard.
+The active findings route uses Nimble Web Search Agent API V2 from the server-only `/api/findings` route. A refresh starts a named or fixed-agent run immediately; the browser then polls a separate status request until Nimble finishes, retrieves the structured result, preserves safe trust-source metadata, and validates every finding before returning it to the dashboard.
+
+This monitor intentionally performs a broad research sweep across multiple authoritative source groups and asks for cited, structured findings. That workload can take several minutes, which is normal for this agent design even though a single quick search would return sooner. While the run is in progress, the dashboard keeps the existing findings visible and labels the check as pending.
 
 Configure NIMBLE_API_KEY as a secret in the Site runtime environment. Set NIMBLE_AGENT_ID to the fixed Security Watchtower agent when available; otherwise use the stable NIMBLE_AGENT_NAME value to let Nimble create or reuse the agent by name. Never expose the API key through client-side environment variables.
 

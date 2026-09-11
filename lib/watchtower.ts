@@ -1,5 +1,3 @@
-import { Apple, Bot, Monitor, TerminalSquare, type LucideIcon } from "lucide-react";
-
 export type PlatformKey = "all" | "macos" | "windows" | "linux" | "ai";
 export type Severity = "critical" | "high" | "medium" | "low";
 
@@ -22,12 +20,12 @@ export type Finding = {
 
 export const PLATFORM_META: Record<Exclude<PlatformKey, "all">, {
   label: string;
-  icon: LucideIcon;
+  logos: string[];
 }> = {
-  macos: { label: "macOS", icon: Apple },
-  windows: { label: "Windows", icon: Monitor },
-  linux: { label: "Linux", icon: TerminalSquare },
-  ai: { label: "AI prompt safety", icon: Bot },
+  macos: { label: "macOS", logos: ["/brand-logos/apple.svg"] },
+  windows: { label: "Windows", logos: ["/brand-logos/microsoft.svg"] },
+  linux: { label: "Linux", logos: ["/brand-logos/linux.svg"] },
+  ai: { label: "AI prompt safety", logos: ["/brand-logos/openai.svg", "/brand-logos/anthropic.svg"] },
 };
 
 export const SOURCE_CATALOG = [

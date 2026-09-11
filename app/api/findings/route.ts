@@ -6,8 +6,6 @@ export const dynamic = "force-dynamic";
 const DEFAULT_NIMBLE_BASE_URL = "https://sdk.nimbleway.com/v2";
 const DEFAULT_AGENT_NAME = "security-watchtower-monitor";
 const NIMBLE_REQUEST_TIMEOUT_MS = 7_000;
-const NIMBLE_RUN_WAIT_MS = 45_000;
-const NIMBLE_POLL_INTERVAL_MS = 1_200;
 const MAX_FINDINGS = 50;
 const AUTOMATION_USER_AGENT = /(?:bot|crawler|spider|scraper|curl|wget|python|httpx|aiohttp|scrapy|go-http-client|libwww|headless|phantomjs|selenium|playwright|puppeteer)/i;
 const TRUSTED_SOURCE_DOMAINS = [
@@ -354,7 +352,12 @@ async function fetchWithTimeout(url: string, init: RequestInit) {
   }
 }
 
-async function runNimbleAgent() {
+type NimbleRunReference = {
+  agentId: string;
+  runId: string;
+};
+
+async function startNimbleAgent(): Promise<NimbleRunReference> {
   const config = getNimbleConfig();
   if (!config) throw new Error("Nimble monitoring is not configured.");
 
@@ -388,52 +391,46 @@ async function runNimbleAgent() {
   const resolvedAgentId = stringField(created, "web_search_agent_id", "agent_id") ?? agentId;
   if (!runId || !resolvedAgentId) throw new Error("Nimble returned an incomplete monitoring run.");
 
-  const statusUrl = `${NIMBLE_BASE_URL}/agents/${encodeURIComponent(resolvedAgentId)}/runs/${encodeURIComponent(runId)}`;
-  const resultUrl = `${statusUrl}/result`;
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < NIMBLE_RUN_WAIT_MS) {
-    const statusResponse = await fetchWithTimeout(statusUrl, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (!statusResponse.ok) throw new Error(`Nimble status check failed (${statusResponse.status}).`);
-    const status = (await statusResponse.json()) as Record<string, unknown>;
-    const state = String(status.status ?? status.state ?? "").toLowerCase();
-
-    if (state === "completed" || state === "succeeded") {
-      const resultResponse = await fetchWithTimeout(resultUrl, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      });
-      if (!resultResponse.ok) throw new Error(`Nimble result retrieval failed (${resultResponse.status}).`);
-      const resultPayload = await resultResponse.json();
-      const result = getAgentOutput(resultPayload);
-      if (!isRecord(result) || !Array.isArray(result.findings)) {
-        throw new Error("Nimble returned an invalid monitoring result.");
-      }
-      const findings = normalizeFindings(result);
-      const trust = normalizeTrust(resultPayload);
-      return { findings, trust, message: "Live Nimble findings refreshed.", mode: "live" as const };
-    }
-
-    if (["failed", "cancelled"].includes(state)) {
-      throw new Error(`Nimble monitoring run ${state}.`);
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, NIMBLE_POLL_INTERVAL_MS));
-  }
-
-  throw new Error("Nimble monitoring is still running. Try again shortly.");
+  return { agentId: resolvedAgentId, runId };
 }
 
-let activeNimbleRun: ReturnType<typeof runNimbleAgent> | null = null;
+async function readNimbleAgentRun(run: NimbleRunReference) {
+  const config = getNimbleConfig();
+  if (!config) throw new Error("Nimble monitoring is not configured.");
 
-function runNimbleAgentOnce() {
-  if (!activeNimbleRun) {
-    activeNimbleRun = runNimbleAgent().finally(() => {
-      activeNimbleRun = null;
+  const apiKey = config.apiKey;
+  const NIMBLE_BASE_URL = config.baseUrl;
+  const { agentId, runId } = run;
+  const statusUrl = `${NIMBLE_BASE_URL}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}`;
+  const resultUrl = `${statusUrl}/result`;
+
+  const statusResponse = await fetchWithTimeout(statusUrl, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!statusResponse.ok) throw new Error(`Nimble status check failed (${statusResponse.status}).`);
+  const status = (await statusResponse.json()) as Record<string, unknown>;
+  const state = String(status.status ?? status.state ?? "").toLowerCase();
+
+  if (state === "completed" || state === "succeeded") {
+    const resultResponse = await fetchWithTimeout(resultUrl, {
+      headers: { Authorization: `Bearer ${apiKey}` },
     });
+    if (!resultResponse.ok) throw new Error(`Nimble result retrieval failed (${resultResponse.status}).`);
+    const resultPayload = await resultResponse.json();
+    const result = getAgentOutput(resultPayload);
+    if (!isRecord(result) || !Array.isArray(result.findings)) {
+      throw new Error("Nimble returned an invalid monitoring result.");
+    }
+    const findings = normalizeFindings(result);
+    const trust = normalizeTrust(resultPayload);
+    return { findings, trust, message: "Live Nimble findings refreshed.", mode: "live" as const };
   }
-  return activeNimbleRun;
+
+  if (["failed", "cancelled"].includes(state)) {
+    throw new Error(`Nimble monitoring run ${state}.`);
+  }
+
+  return { message: "Nimble research is still running.", mode: "pending" as const };
 }
 
 export async function POST(request: Request) {
@@ -453,15 +450,70 @@ export async function POST(request: Request) {
   }
 
   try {
-    const live = await runNimbleAgentOnce();
+    const run = await startNimbleAgent();
+    return jsonResponse({
+      ...run,
+      message: "Nimble research started. This multi-source check can take several minutes.",
+      mode: "pending",
+      status: "running",
+    }, 202);
+  } catch (error) {
+    return fallback(error instanceof Error ? error.message : "The Nimble monitoring run could not be started.");
+  }
+}
+
+export async function GET(request: Request) {
+  const config = getNimbleConfig();
+  if (!config) {
+    return fallback(
+      "Demo data is active. Add a Nimble API key and monitoring agent in Sites to enable live findings.",
+      "demo",
+    );
+  }
+
+  if (!isAllowedBrowserRefresh(request)) {
+    return jsonResponse(
+      { message: "Refresh is available from a normal browser session.", mode: "fallback" },
+      403,
+    );
+  }
+
+  const url = new URL(request.url);
+  const runId = url.searchParams.get("runId")?.trim();
+  const requestedAgentId = url.searchParams.get("agentId")?.trim();
+  const agentId = requestedAgentId || config.agentId;
+
+  if (!runId || !agentId) {
+    return jsonResponse({ message: "Nimble run reference is incomplete.", mode: "fallback" }, 400);
+  }
+  if (config.agentId && agentId !== config.agentId) {
+    return jsonResponse({ message: "Nimble run reference is not valid for this monitor.", mode: "fallback" }, 403);
+  }
+
+  try {
+    const result = await readNimbleAgentRun({ agentId, runId });
+    if (result.mode === "pending") {
+      return jsonResponse(
+        {
+          agentId,
+          runId,
+          message: result.message,
+          mode: result.mode,
+          status: "running",
+        },
+        202,
+      );
+    }
+
     return jsonResponse({
       checkedAt: new Date().toISOString(),
-      findings: live.findings,
-      ...(live.trust ? { trust: live.trust } : {}),
-      message: live.message,
-      mode: live.mode,
+      findings: result.findings,
+      ...(result.trust ? { trust: result.trust } : {}),
+      message: result.message,
+      mode: result.mode,
+      status: "completed",
     });
   } catch (error) {
-    return fallback(error instanceof Error ? error.message : "The Nimble monitoring run could not be completed.");
+    return fallback(error instanceof Error ? error.message : "The Nimble monitoring run could not be read.");
   }
 }

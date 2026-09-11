@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import {
   Activity,
   ArrowUpRight,
@@ -23,13 +24,21 @@ import {
   type Severity,
 } from "@/lib/watchtower";
 
-type FeedMode = "demo" | "live" | "fallback";
+type FeedMode = "demo" | "live" | "fallback" | "pending";
 
 type FeedResponse = {
+  agentId?: string;
   checkedAt?: string;
   findings?: Finding[];
   message?: string;
   mode?: FeedMode;
+  runId?: string;
+  status?: "running" | "completed";
+};
+
+type ActiveRun = {
+  agentId: string;
+  runId: string;
 };
 
 const severityLabels: Record<Severity, string> = {
@@ -81,17 +90,23 @@ export default function Home() {
   const [findings, setFindings] = useState<Finding[]>(DEMO_FINDINGS);
   const [mode, setMode] = useState<FeedMode>("demo");
   const [lastChecked, setLastChecked] = useState<string>();
+  const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
   const [selectedPlatform, setSelectedPlatform] = useState<PlatformKey>("all");
   const [expandedId, setExpandedId] = useState<string | null>(DEMO_FINDINGS[0].id);
   const [technicalId, setTechnicalId] = useState<string | null>(null);
   const [reviewedIds, setReviewedIds] = useState<Set<string>>(new Set());
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const isRefreshingRef = useRef(false);
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("Loading current findings.");
 
-  async function loadFindings() {
+  const loadFindings = useCallback(async () => {
+    if (isRefreshingRef.current) return;
+
+    isRefreshingRef.current = true;
     setIsRefreshing(true);
     setError(undefined);
+    setMode("pending");
 
     try {
       const response = await fetch("/api/findings", {
@@ -104,25 +119,101 @@ export default function Home() {
         throw new Error(payload.message ?? "The latest findings could not be loaded.");
       }
 
-      if (Array.isArray(payload.findings)) setFindings(payload.findings);
-      if (payload.mode) setMode(payload.mode);
-      if (payload.checkedAt) setLastChecked(payload.checkedAt);
-      setAnnouncement(payload.message ?? "Findings refreshed.");
+      if (payload.mode === "demo") {
+        if (Array.isArray(payload.findings)) setFindings(payload.findings);
+        setMode("demo");
+        if (payload.checkedAt) setLastChecked(payload.checkedAt);
+        setAnnouncement(payload.message ?? "Showing the demo findings.");
+        isRefreshingRef.current = false;
+        setIsRefreshing(false);
+        return;
+      }
+
+      if (payload.mode === "live") {
+        if (Array.isArray(payload.findings)) setFindings(payload.findings);
+        setMode("live");
+        if (payload.checkedAt) setLastChecked(payload.checkedAt);
+        setAnnouncement(payload.message ?? "Findings refreshed.");
+        isRefreshingRef.current = false;
+        setIsRefreshing(false);
+        return;
+      }
+
+      if (!payload.runId || !payload.agentId) {
+        throw new Error("Nimble returned an incomplete monitoring run.");
+      }
+
+      setActiveRun({ runId: payload.runId, agentId: payload.agentId });
+      setAnnouncement(payload.message ?? "Nimble research is running.");
     } catch (loadError) {
       setMode("fallback");
       setError(loadError instanceof Error ? loadError.message : "The latest findings could not be loaded.");
       setAnnouncement("The latest findings could not be loaded. Showing the last available view.");
-    } finally {
+      isRefreshingRef.current = false;
       setIsRefreshing(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    if (!activeRun) return;
+
+    let cancelled = false;
+    let timer: number | undefined;
+
+    async function pollRun() {
+      try {
+        const params = new URLSearchParams({
+          agentId: activeRun.agentId,
+          runId: activeRun.runId,
+        });
+        const response = await fetch(`/api/findings?${params.toString()}`, {
+          cache: "no-store",
+        });
+        const payload = (await response.json()) as FeedResponse;
+
+        if (cancelled) return;
+
+        if (response.status === 202 || payload.status === "running" || payload.mode === "pending") {
+          setAnnouncement(payload.message ?? "Nimble research is still running.");
+          timer = window.setTimeout(() => void pollRun(), 10_000);
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(payload.message ?? "The Nimble monitoring run could not be read.");
+        }
+
+        if (Array.isArray(payload.findings)) setFindings(payload.findings);
+        setMode(payload.mode ?? "live");
+        if (payload.checkedAt) setLastChecked(payload.checkedAt);
+        setAnnouncement(payload.message ?? "Findings refreshed.");
+        setActiveRun(null);
+        isRefreshingRef.current = false;
+        setIsRefreshing(false);
+      } catch (pollError) {
+        if (cancelled) return;
+        setActiveRun(null);
+        isRefreshingRef.current = false;
+        setIsRefreshing(false);
+        setMode("fallback");
+        setError(pollError instanceof Error ? pollError.message : "The Nimble monitoring run could not be read.");
+        setAnnouncement("The latest findings could not be loaded. Showing the last available view.");
+      }
+    }
+
+    timer = window.setTimeout(() => void pollRun(), 2_000);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [activeRun]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadFindings();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [loadFindings]);
 
   const visibleFindings = useMemo(() => {
     const scoped = selectedPlatform === "all"
@@ -198,21 +289,22 @@ export default function Home() {
           </div>
         </section>
 
-        <div className={`feed-notice ${mode === "live" ? "feed-notice-live" : ""}`} role="status">
+        <div className={`feed-notice ${mode === "live" ? "feed-notice-live" : ""} ${mode === "pending" ? "feed-notice-pending" : ""}`} role="status">
           {mode === "live" ? <CheckCircle2 size={15} aria-hidden="true" /> : <Info size={15} aria-hidden="true" />}
           <span>
             {mode === "demo"
               ? "Demo feed — connect Nimble to replace these examples with live findings."
-              : mode === "fallback"
-                ? "Showing the last available view — the latest check needs attention."
-                : "Live Nimble feed connected — findings are sourced from the configured monitoring agent."}
+              : mode === "pending"
+                ? "Nimble research is running — this multi-source check can take several minutes."
+                : mode === "fallback"
+                  ? "Showing the last available view — the latest check needs attention."
+                  : "Live Nimble feed connected — findings are sourced from the configured monitoring agent."}
           </span>
         </div>
 
         <section className="platform-grid" aria-label="Monitoring scopes">
           {platformOrder.map((platform) => {
             const metadata = PLATFORM_META[platform];
-            const PlatformIcon = metadata.icon;
             const count = countFor(platform);
             const isSelected = selectedPlatform === platform;
             return (
@@ -223,8 +315,13 @@ export default function Home() {
                 aria-pressed={isSelected}
                 onClick={() => setSelectedPlatform(isSelected ? "all" : platform)}
               >
-                <div className={`platform-icon platform-icon-${platform}`} aria-hidden="true">
-                  <PlatformIcon size={19} strokeWidth={2} />
+                <div
+                  className={`platform-icon platform-icon-${platform} ${metadata.logos.length > 1 ? "platform-icon-multiple" : ""}`}
+                  aria-hidden="true"
+                >
+                  {metadata.logos.map((logo) => (
+                    <Image key={logo} className="platform-logo" src={logo} alt="" width={22} height={22} />
+                  ))}
                 </div>
                 <div className="platform-card-body">
                   <div className="platform-card-heading">
