@@ -27,6 +27,14 @@ Local previews use Miniflare's placeholder `Request.cf` metadata without a netwo
 
 Local tool usage metrics are disabled by default. Set `WRANGLER_SEND_METRICS=true` to opt in.
 
+## Nimble Agent Feed
+
+The active findings route uses Nimble Web Search Agent API V2 from the server-only POST /api/findings route. It starts a named or fixed-agent run, polls until the run is complete, retrieves the structured result, preserves safe trust-source metadata, and validates every finding before returning it to the dashboard.
+
+Configure NIMBLE_API_KEY as a secret in the Site runtime environment. Set NIMBLE_AGENT_ID to the fixed Security Watchtower agent when available; otherwise use the stable NIMBLE_AGENT_NAME value to let Nimble create or reuse the agent by name. Never expose the API key through client-side environment variables.
+
+Live refreshes require a signed-in Site visitor. If the key is absent or a provider request fails, the dashboard keeps its demo or last available view and reports that live data is unavailable.
+
 ## Included Shape
 
 - edit site code under `app/`

@@ -94,14 +94,17 @@ export default function Home() {
     setError(undefined);
 
     try {
-      const response = await fetch("/api/findings?refresh=1", { cache: "no-store" });
+      const response = await fetch("/api/findings", {
+        method: "POST",
+        cache: "no-store",
+      });
       const payload = (await response.json()) as FeedResponse;
 
-      if (!response.ok && !payload.findings) {
+      if (!response.ok) {
         throw new Error(payload.message ?? "The latest findings could not be loaded.");
       }
 
-      if (payload.findings?.length) setFindings(payload.findings);
+      if (Array.isArray(payload.findings)) setFindings(payload.findings);
       if (payload.mode) setMode(payload.mode);
       if (payload.checkedAt) setLastChecked(payload.checkedAt);
       setAnnouncement(payload.message ?? "Findings refreshed.");
@@ -242,7 +245,7 @@ export default function Home() {
           </div>
           <div className="source-list">
             {SOURCE_CATALOG.map((source) => (
-              <a key={source.name} href={source.url} target="_blank" rel="noreferrer">
+              <a key={source.name} href={source.url} target="_blank" rel="noopener noreferrer">
                 {source.name}
                 <ExternalLink size={12} aria-hidden="true" />
               </a>
@@ -330,7 +333,7 @@ export default function Home() {
                             <span className="evidence-icon" aria-hidden="true"><Clock3 size={14} /></span>
                             <span>
                               <span className="detail-label">Source</span>
-                              <a href={finding.sourceUrl} target="_blank" rel="noreferrer">
+                              <a href={finding.sourceUrl} target="_blank" rel="noopener noreferrer">
                                 {finding.source} <ExternalLink size={12} aria-hidden="true" />
                               </a>
                             </span>
