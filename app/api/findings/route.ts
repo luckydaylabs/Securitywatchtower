@@ -579,6 +579,39 @@ async function fetchWithTimeout(url: string, init: RequestInit) {
   }
 }
 
+async function readNimbleError(response: Response) {
+  let raw = "";
+
+  try {
+    raw = await response.text();
+  } catch {
+    return "";
+  }
+
+  if (!raw.trim()) return "";
+
+  let detail = raw;
+  try {
+    const payload = JSON.parse(raw) as unknown;
+    if (isRecord(payload)) {
+      const nestedDetail = isRecord(payload.detail) ? payload.detail : null;
+      detail =
+        stringField(payload, "message", "error", "detail") ??
+        (nestedDetail ? stringField(nestedDetail, "message", "error", "detail") : null) ??
+        raw;
+    }
+  } catch {
+    // Keep the short raw response when the provider does not return JSON.
+  }
+
+  return detail
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]")
+    .replace(/(?:api[_-]?key|token|secret)\s*[:=]\s*["']?[^,\s"']+/gi, "$1=[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
+}
+
 async function startNimbleStage(stage: PipelineStage, input: string): Promise<NimbleRunReference> {
   const config = getNimbleConfig();
   if (!config) throw new Error("Nimble monitoring is not configured.");
@@ -587,24 +620,53 @@ async function startNimbleStage(stage: PipelineStage, input: string): Promise<Ni
   const createUrl = role.agentId
     ? `${config.baseUrl}/agents/${encodeURIComponent(role.agentId)}/runs`
     : `${config.baseUrl}/agents/runs`;
-  const createResponse = await fetchWithTimeout(createUrl, {
+  const requestBody: Record<string, unknown> = {
+    ...(role.agentId ? {} : { agent_name: role.agentName, use_case: "research" }),
+    input,
+    effort: "medium",
+    output_schema: roleOutputSchemas[stage],
+    skill: roleSkills[stage],
+    sources: monitorSources,
+  };
+  let createResponse = await fetchWithTimeout(createUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      ...(role.agentId ? {} : { agent_name: role.agentName, use_case: "research" }),
-      input,
-      effort: "medium",
-      output_schema: roleOutputSchemas[stage],
-      skill: roleSkills[stage],
-      sources: monitorSources,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
+  let errorDetail = "";
   if (!createResponse.ok) {
-    throw new Error(`Nimble could not start the ${stage} stage (${createResponse.status}).`);
+    errorDetail = await readNimbleError(createResponse);
+
+    // Nimble locks use_case on agent creation. A named agent may have been
+    // created previously with another use case, in which case omitting the
+    // field reuses its stored configuration without creating a new agent.
+    if (
+      !role.agentId &&
+      createResponse.status === 422 &&
+      /use[_ ]case[\s\S]*cannot be changed for an existing agent/i.test(errorDetail)
+    ) {
+      const retryBody = { ...requestBody };
+      delete retryBody.use_case;
+      createResponse = await fetchWithTimeout(createUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(retryBody),
+      });
+      if (!createResponse.ok) errorDetail = await readNimbleError(createResponse);
+    }
+  }
+
+  if (!createResponse.ok) {
+    throw new Error(
+      `Nimble could not start the ${stage} stage (${createResponse.status})${errorDetail ? `: ${errorDetail}` : "."}`,
+    );
   }
 
   const created = (await createResponse.json()) as Record<string, unknown>;
