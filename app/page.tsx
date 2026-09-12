@@ -603,7 +603,7 @@ export default function Home() {
             <div className="monitoring-toggle">
               <span className="monitoring-toggle-copy">
                 <span className="monitoring-toggle-label">Hourly checks</span>
-                <span className="monitoring-toggle-state">{hourlyMonitoringEnabled === null ? "Loading" : hourlyMonitoringEnabled ? "On · while open" : "Off"}</span>
+                {hourlyMonitoringEnabled !== false && <span className="monitoring-toggle-state">{hourlyMonitoringEnabled === null ? "Loading" : "On · while open"}</span>}
               </span>
               <button
                 className={`monitoring-switch ${hourlyMonitoringEnabled ? "monitoring-switch-on" : ""}`}
