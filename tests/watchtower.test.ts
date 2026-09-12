@@ -36,6 +36,8 @@ test("Research guards cardinality and preserves captured source identity", () =>
   assert.throws(() => researchInput("scan", "investigator", [{ ...item, url: "https://attacker.invalid" }]));
   assert.throws(() => validateResearch({ findings: [finding, finding] }, [item]));
   assert.equal(validateResearch({ output: { type: "json", content: { findings: [{ ...finding, platform: "ai" }] } } }, [item])[0].platform, "linux");
+  assert.equal(validateResearch({ findings: [{ ...finding, id: "USN-1234-1" }] }, [item])[0].id, item.id);
+  assert.throws(() => validateResearch({ findings: [{ ...finding, id: "unrelated", sourceUrl: "https://ubuntu.com/security/notices/unrelated" }] }, [item]), /unknown announcement/);
 });
 test("Document queue drains on 304 without fetching the index again", async () => {
   const document = { ...item, id: "msrc:2026-Sep", sourceId: "msrc", url: "https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/2026-Sep", windowStart: since, windowEnd: until };
