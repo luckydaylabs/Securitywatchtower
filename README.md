@@ -1,6 +1,6 @@
-# vinext-starter
+# Security Watchtower
 
-A clean full-stack starter running on [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and Drizzle support.
+A full-stack security intelligence dashboard running on [vinext](https://github.com/cloudflare/vinext), with Nimble Web Search Agents and optional Cloudflare D1 and Drizzle support.
 
 ## Prerequisites
 
@@ -9,9 +9,9 @@ A clean full-stack starter running on [vinext](https://github.com/cloudflare/vin
 
 ## Sites Lifecycle
 
-The bundled Sites initializer copies this starter into the project and runs its locked dependency install before returning the checkout. Edit the source under `app/`, use `npm run dev` for the Codex local preview, and run the project validation before hosting. The remote Sites builder also runs `npm run build` against the pushed commit. Do not rerun the dependency install unless dependencies are absent or the lockfile changed.
+The bundled Sites initializer provisions the project and runs its locked dependency install before returning the checkout. Edit the source under `app/`, use `npm run dev` for the Codex local preview, and run the project validation before hosting. The remote Sites builder also runs `npm run build` against the pushed commit. Do not rerun the dependency install unless dependencies are absent or the lockfile changed.
 
-This starter does not use `wrangler.jsonc`.
+This project does not use `wrangler.jsonc`.
 
 `install:ci` runs `npm ci` once against this checkout's bundled lockfile, explicitly targeting the project and disabling parent-workspace discovery. It includes dev and optional dependencies required for builds and previews even when production/omit settings would exclude them. It defaults Sharp to prebuilt binaries unless the caller explicitly configures Sharp or a source build. It uses `--prefer-offline --no-audit --no-fund`, reuses the configured npm cache, and leaves network concurrency, retries, timeouts, and lifecycle-script policy to npm's configuration. Retain the installer session until it finishes; do not overlap installers for the same checkout.
 
@@ -19,9 +19,9 @@ This starter does not use `wrangler.jsonc`.
 
 `npm run dev` uses `vinext dev` for the live Vite preview with HMR, starting at port 5173. Vinext records the running server in ignored `.vinext/` state and rejects another start for the same checkout while that process is alive; reuse its printed URL. It recovers stale state after a stopped process. Pass `--port <port>` or `--hostname <host>` after `npm run dev --` when needed; keep Codex previews on loopback. Like the Sites package, this relies on Vinext's advisory lock; exactly simultaneous starts can race.
 
-The bundled Sites Vite plugin simulates ChatGPT sign-in only for loopback development requests. Visit `/signin-with-chatgpt?return_to=/` to sign in as `local_seedy` (`seedy@sites.test`, display name `Seedy`) and `/signout-with-chatgpt?return_to=/` to sign out. The development cookie preserves that identity across server restarts. This does not exercise real ChatGPT OAuth and is not included in production builds; hosted authentication remains dispatch-owned.
+The bundled Sites Vite plugin provides ChatGPT sign-in fixtures only for loopback development requests. Visit `/signin-with-chatgpt?return_to=/` to sign in as `local_seedy` (`seedy@sites.test`, display name `Seedy`) and `/signout-with-chatgpt?return_to=/` to sign out. The development cookie preserves that identity across server restarts. This does not exercise real ChatGPT OAuth and is not included in production builds; hosted authentication remains dispatch-owned.
 
-The Worker uses `vinext/server/fetch-handler`, including Vinext's config-aware image handling. After building, `npm start` runs that Worker locally through Wrangler on `127.0.0.1`, sharing `.wrangler/state` with dev preview and local D1 migrations; it does not deploy the site or simulate sign-in. Use the URL printed by the server. Pass `npm start -- --port <port>` to select a different built-preview port.
+The Worker uses `vinext/server/fetch-handler`, including Vinext's config-aware image handling. After building, `npm start` runs that Worker locally through Wrangler on `127.0.0.1`, sharing `.wrangler/state` with dev preview and local D1 migrations; it does not deploy the Site or enable local sign-in. Use the URL printed by the server. Pass `npm start -- --port <port>` to select a different built-preview port.
 
 Local previews use Miniflare's placeholder `Request.cf` metadata without a network lookup. Set `CLOUDFLARE_CF_FETCH_ENABLED=true` to opt into fetching preview metadata; this setting does not change hosted request metadata.
 
@@ -31,18 +31,20 @@ Local tool usage metrics are disabled by default. Set `WRANGLER_SEND_METRICS=tru
 
 The active findings route uses Nimble Web Search Agent API V2 from the server-only `/api/findings` route. A refresh starts a named or fixed-agent run immediately; the browser then polls a separate status request until Nimble finishes, retrieves the structured result, preserves safe trust-source metadata, and validates every finding before returning it to the dashboard.
 
-This monitor intentionally performs a broad research sweep across multiple authoritative source groups and asks for cited, structured findings. That workload can take several minutes, which is normal for this agent design even though a single quick search would return sooner. While the run is in progress, the dashboard keeps the existing findings visible and labels the check as pending.
+The monitor stage performs a broad research sweep across multiple authoritative source groups. The investigation, verification, and orchestration stages then process its structured output. This workload can take several minutes; while the pipeline is in progress, the dashboard keeps the last completed snapshot visible and labels the current check as pending.
 
-Configure NIMBLE_API_KEY as a secret in the Site runtime environment. Set NIMBLE_AGENT_ID to the fixed Security Watchtower agent when available; otherwise use the stable NIMBLE_AGENT_NAME value to let Nimble create or reuse the agent by name. Never expose the API key through client-side environment variables.
+Configure NIMBLE_API_KEY as a secret in the Site runtime environment. Set NIMBLE_MONITOR_AGENT_ID, NIMBLE_INVESTIGATOR_AGENT_ID, NIMBLE_VERIFIER_AGENT_ID, and NIMBLE_ORCHESTRATOR_AGENT_ID to the fixed Security Watchtower agents. The legacy NIMBLE_AGENT_ID and NIMBLE_AGENT_NAME values remain supported for the monitor role. Never expose the API key through client-side environment variables.
 
-Live refreshes are available to normal same-origin browser sessions so reviewers can use the public Site. The route rejects missing or clearly automated clients, but this is a best-effort filter rather than human verification. If the key is absent or a provider request fails, the dashboard keeps its demo or last available view and reports that live data is unavailable.
+Live refreshes are available to normal same-origin browser sessions so reviewers can use the public Site. The route rejects missing or clearly automated clients, but this is a best-effort filter rather than human verification. If the key is absent or a provider request fails, the dashboard returns an unavailable state; a completed snapshot already in the browser remains visible while the new check is retried.
+
+Each refresh runs four Nimble stages in sequence: monitor authoritative sources, investigate candidate alerts, independently verify the evidence, and orchestrate the final dashboard payload. Only the final stage can publish findings to `/api/findings`, and the server rejects untrusted source URLs, invalid timestamps, duplicate IDs, incomplete records, and unsupported platforms or severities. The pipeline is on demand; no background schedule is configured by default.
 
 ## Included Shape
 
 - edit site code under `app/`
 - `app/chatgpt-auth.ts` provides optional dispatch-owned ChatGPT sign-in helpers
 - `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
+- `vite.config.ts` provides declared binding shims for local development
 - `db/index.ts` reads the D1 binding from the Cloudflare Worker environment
 - `db/schema.ts` starts intentionally empty
 - `@cloudflare/workers-types` provides Worker types; `cloudflare-env.d.ts` declares optional `DB`/`BUCKET` bindings—update these declarations if binding names change

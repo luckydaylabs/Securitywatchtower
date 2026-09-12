@@ -21,7 +21,6 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import {
-  DEMO_FINDINGS,
   PLATFORM_META,
   SOURCE_CATALOG,
   type Finding,
@@ -31,7 +30,16 @@ import {
 import { VulnerabilityTicker } from "@/components/vulnerability-ticker";
 import { ThreatAnalytics } from "@/components/threat-analytics";
 
-type FeedMode = "demo" | "live" | "fallback" | "pending";
+type FeedMode = "idle" | "live" | "fallback" | "pending";
+type PipelineStage = "monitor" | "investigator" | "verifier" | "orchestrator";
+
+type RunReference = {
+  stage: PipelineStage;
+  agentId: string;
+  runId: string;
+};
+
+type PipelineContext = Partial<Record<PipelineStage, RunReference>>;
 
 type FeedResponse = {
   agentId?: string;
@@ -39,14 +47,31 @@ type FeedResponse = {
   findings?: Finding[];
   message?: string;
   mode?: FeedMode;
+  stage?: PipelineStage;
+  context?: PipelineContext;
+  pipelineStages?: PipelineStage[];
   runId?: string;
   status?: "running" | "completed";
 };
 
-type ActiveRun = {
-  agentId: string;
-  runId: string;
+type ActiveRun = RunReference & { context: PipelineContext };
+
+const pipelineStages: PipelineStage[] = ["monitor", "investigator", "verifier", "orchestrator"];
+const pipelineStageLabels: Record<PipelineStage, string> = {
+  monitor: "Monitor",
+  investigator: "Investigate",
+  verifier: "Verify",
+  orchestrator: "Orchestrate",
 };
+
+function addPipelineContext(params: URLSearchParams, context: PipelineContext) {
+  for (const stage of pipelineStages) {
+    const reference = context[stage];
+    if (!reference) continue;
+    params.set(`${stage}AgentId`, reference.agentId);
+    params.set(`${stage}RunId`, reference.runId);
+  }
+}
 
 const severityLabels: Record<Severity, string> = {
   critical: "Critical",
@@ -94,9 +119,8 @@ function findingTime(value: string) {
 }
 
 export default function Home() {
-  const [findings, setFindings] = useState<Finding[]>(DEMO_FINDINGS);
-  const [mode, setMode] = useState<FeedMode>("demo");
-  const [dataIsDemo, setDataIsDemo] = useState(true);
+  const [findings, setFindings] = useState<Finding[]>([]);
+  const [mode, setMode] = useState<FeedMode>("idle");
   const [lastChecked, setLastChecked] = useState<string>();
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
   const [selectedPlatform, setSelectedPlatform] = useState<PlatformKey>("all");
@@ -106,7 +130,7 @@ export default function Home() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const isRefreshingRef = useRef(false);
   const [error, setError] = useState<string>();
-  const [announcement, setAnnouncement] = useState("Loading current findings.");
+  const [announcement, setAnnouncement] = useState("Starting the monitoring pipeline.");
 
   const loadFindings = useCallback(async () => {
     if (isRefreshingRef.current) return;
@@ -127,20 +151,8 @@ export default function Home() {
         throw new Error(payload.message ?? "The latest findings could not be loaded.");
       }
 
-      if (payload.mode === "demo") {
-        if (Array.isArray(payload.findings)) setFindings(payload.findings);
-        setDataIsDemo(true);
-        setMode("demo");
-        if (payload.checkedAt) setLastChecked(payload.checkedAt);
-        setAnnouncement(payload.message ?? "Showing the demo findings.");
-        isRefreshingRef.current = false;
-        setIsRefreshing(false);
-        return;
-      }
-
       if (payload.mode === "live") {
         if (Array.isArray(payload.findings)) setFindings(payload.findings);
-        setDataIsDemo(false);
         setMode("live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setAnnouncement(payload.message ?? "Findings refreshed.");
@@ -149,16 +161,23 @@ export default function Home() {
         return;
       }
 
-      if (!payload.runId || !payload.agentId) {
+      if (!payload.runId || !payload.agentId || !payload.stage) {
         throw new Error("Nimble returned an incomplete monitoring run.");
       }
 
-      setActiveRun({ runId: payload.runId, agentId: payload.agentId });
+      setActiveRun({
+        stage: payload.stage,
+        runId: payload.runId,
+        agentId: payload.agentId,
+        context: payload.context ?? {
+          monitor: { stage: "monitor", runId: payload.runId, agentId: payload.agentId },
+        },
+      });
       setAnnouncement(payload.message ?? "Nimble research is running.");
     } catch (loadError) {
       setMode("fallback");
       setError(loadError instanceof Error ? loadError.message : "The latest findings could not be loaded.");
-      setAnnouncement("The latest findings could not be loaded. Showing the last available view.");
+      setAnnouncement("The monitoring pipeline could not be completed. No new findings were loaded.");
       isRefreshingRef.current = false;
       setIsRefreshing(false);
     }
@@ -176,7 +195,9 @@ export default function Home() {
         const params = new URLSearchParams({
           agentId: run.agentId,
           runId: run.runId,
+          stage: run.stage,
         });
+        addPipelineContext(params, run.context);
         const response = await fetch(`/api/findings?${params.toString()}`, {
           cache: "no-store",
         });
@@ -186,6 +207,19 @@ export default function Home() {
 
         if (response.status === 202 || payload.status === "running" || payload.mode === "pending") {
           setAnnouncement(payload.message ?? "Nimble research is still running.");
+          if (payload.runId && payload.agentId && payload.stage) {
+            const nextContext = payload.context ?? run.context;
+            const changed = payload.runId !== run.runId || payload.agentId !== run.agentId || payload.stage !== run.stage;
+            if (changed) {
+              setActiveRun({
+                stage: payload.stage,
+                runId: payload.runId,
+                agentId: payload.agentId,
+                context: nextContext,
+              });
+              return;
+            }
+          }
           timer = window.setTimeout(() => void pollRun(), 10_000);
           return;
         }
@@ -195,7 +229,6 @@ export default function Home() {
         }
 
         if (Array.isArray(payload.findings)) setFindings(payload.findings);
-        if (Array.isArray(payload.findings)) setDataIsDemo(payload.mode === "demo");
         setMode(payload.mode ?? "live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setAnnouncement(payload.message ?? "Findings refreshed.");
@@ -209,7 +242,7 @@ export default function Home() {
         setIsRefreshing(false);
         setMode("fallback");
         setError(pollError instanceof Error ? pollError.message : "The Nimble monitoring run could not be read.");
-        setAnnouncement("The latest findings could not be loaded. Showing the last available view.");
+        setAnnouncement("The monitoring pipeline could not be completed. No new findings were loaded.");
       }
     }
 
@@ -318,22 +351,36 @@ export default function Home() {
         <VulnerabilityTicker
           findings={findings.filter((finding) => !reviewedIds.has(finding.id))}
           mode={mode}
-          isDemo={dataIsDemo}
           onSelectFinding={focusFinding}
         />
 
         <div className={`feed-notice ${mode === "live" ? "feed-notice-live" : ""} ${mode === "pending" ? "feed-notice-pending" : ""}`} role="status">
           {mode === "live" ? <CheckCircle2 size={15} aria-hidden="true" /> : <Info size={15} aria-hidden="true" />}
           <span>
-            {mode === "demo"
-              ? "Demo data · Illustrative findings. Run a check to request current intelligence."
-              : mode === "pending"
-                ? `${dataIsDemo ? "Demo data shown" : "Previous findings shown"} · Nimble is checking sources. Research can take several minutes.`
-                : mode === "fallback"
-                  ? `${dataIsDemo ? "Demo data shown" : "Previous findings shown"} · The latest check needs attention.`
-                  : "Nimble results · Findings from the latest completed check. Monitoring runs on demand."}
+            {mode === "pending"
+              ? "Nimble is processing the monitor, investigator, verifier, and orchestrator stages. This can take several minutes."
+              : mode === "fallback"
+                ? "Monitoring is unavailable. Check the Nimble runtime configuration and try again."
+                : mode === "live"
+                  ? "Nimble results · Findings from the latest completed review pipeline. Monitoring runs on demand."
+                  : "Waiting for the first monitoring check."}
           </span>
-          <span className="feed-snapshot-tag">{dataIsDemo ? "DEMO SNAPSHOT" : "LATEST SNAPSHOT"}</span>
+          <span className="feed-snapshot-tag">{mode === "live" ? "LATEST SNAPSHOT" : mode === "pending" ? "PIPELINE ACTIVE" : mode === "fallback" ? "UNAVAILABLE" : "STANDBY"}</span>
+        </div>
+
+        <div className="pipeline-strip" aria-label="Nimble review pipeline">
+          {pipelineStages.map((stage, index) => {
+            const activeIndex = activeRun ? pipelineStages.indexOf(activeRun.stage) : -1;
+            const complete = mode === "live" || (activeIndex > index);
+            const active = activeRun?.stage === stage;
+            return (
+              <span key={stage} className={`pipeline-step ${active ? "pipeline-step-active" : ""} ${complete ? "pipeline-step-complete" : ""}`}>
+                <i>{String(index + 1).padStart(2, "0")}</i>
+                <span>{pipelineStageLabels[stage]}</span>
+                {index < pipelineStages.length - 1 ? <b aria-hidden="true">→</b> : null}
+              </span>
+            );
+          })}
         </div>
 
         <section className="metrics-grid" aria-label="Current feed overview">
@@ -343,8 +390,8 @@ export default function Home() {
           <div className="metric-card"><div className="metric-heading"><span>Reviewed</span><CheckCircle2 size={17}/></div><div className="metric-value-row"><strong>{String(reviewedCount).padStart(2, "0")}</strong><span className="review-fraction">of {findings.length}</span></div><div className="metric-caption">This session{reviewedCount > 0 ? <button type="button" onClick={() => { setReviewedIds(new Set()); setAnnouncement("Reviewed findings restored to the queue."); }}>Reset reviews</button> : <span>Ready for triage</span>}</div></div>
         </section>
 
-        <div className="analytics-context"><span>01 <span className="context-rule"/> Intelligence overview</span><span>{selectedPlatform === "all" ? "All platforms" : PLATFORM_META[selectedPlatform].label} · {dataIsDemo ? "Demo data" : "Latest results"}</span></div>
-        <ThreatAnalytics findings={scopeFindings} isDemo={dataIsDemo} checkedAt={lastChecked}/>
+        <div className="analytics-context"><span>01 <span className="context-rule"/> Intelligence overview</span><span>{selectedPlatform === "all" ? "All platforms" : PLATFORM_META[selectedPlatform].label} · {mode === "live" ? "Latest results" : mode === "pending" ? "Awaiting pipeline" : "No completed data"}</span></div>
+        <ThreatAnalytics findings={scopeFindings} checkedAt={lastChecked}/>
 
         <div className="queue-context"><span>02 <span className="context-rule"/> Platform scope</span><button type="button" onClick={() => setSelectedPlatform("all")} aria-pressed={selectedPlatform === "all"}>All platforms <ArrowUpRight size={13}/></button></div>
 
@@ -508,7 +555,13 @@ export default function Home() {
               <strong>{selectedPlatform === "all" ? "No active findings." : "No findings match this environment."}</strong>
               <p>
                 {selectedPlatform === "all"
-                  ? "All available findings have been reviewed, or this feed is empty. Run a new check for current results."
+                  ? mode === "pending"
+                    ? "The review pipeline is still running. Results will appear when all stages complete."
+                    : mode === "fallback"
+                      ? "No current results are available. Resolve the monitoring configuration and run the check again."
+                      : reviewedCount > 0
+                        ? "All findings in the current snapshot have been reviewed. Run a new check for current results."
+                        : "Run a new check to collect current results from the configured public sources."
                   : "Try the full view to see findings from every monitored scope."}
               </p>
               {selectedPlatform !== "all" ? (
@@ -522,7 +575,7 @@ export default function Home() {
           <div className="sources-heading"><Radio size={17}/><h2 id="sources-title">Source catalog</h2><span>{SOURCE_CATALOG.length}</span></div>
           <p className="sources-description">Authoritative advisories used by the research agent.</p>
           <div className="source-cards">{SOURCE_CATALOG.map((source, index) => <a key={source.name} href={source.url} target="_blank" rel="noopener noreferrer"><span className="source-number">0{index + 1}</span><span>{source.name}</span><ExternalLink size={13}/></a>)}</div>
-          <div className="research-state"><div><Activity size={15}/><span>Research status</span><span className={`research-status ${isRefreshing ? 'research-running' : ''}`}>{isRefreshing ? 'Running' : mode === 'fallback' ? 'Needs attention' : dataIsDemo ? 'Demo' : 'Complete'}</span></div><p>{isRefreshing ? 'Collecting and assessing public advisories.' : 'A new check runs on page load or on request.'}</p><div className="research-progress" aria-hidden="true"><span className={isRefreshing ? 'progress-scanning' : ''}/></div><small>Schedule <strong>On demand</strong></small></div>
+          <div className="research-state"><div><Activity size={15}/><span>Research status</span><span className={`research-status ${isRefreshing ? 'research-running' : ''}`}>{isRefreshing ? 'Running' : mode === 'fallback' ? 'Unavailable' : mode === 'pending' ? 'Queued' : mode === 'live' ? 'Complete' : 'Standby'}</span></div><p>{isRefreshing ? 'Monitor, investigator, verifier, and orchestrator are processing public advisories.' : mode === 'fallback' ? 'Nimble is unavailable. Check the runtime configuration and retry.' : mode === 'live' ? 'The latest completed pipeline supplied this snapshot.' : 'Run a check to collect current public advisories.'}</p><div className="research-progress" aria-hidden="true"><span className={isRefreshing ? 'progress-scanning' : ''}/></div><small>Run mode <strong>On demand</strong></small></div>
         </aside>
         </div>
 

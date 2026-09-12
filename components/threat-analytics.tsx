@@ -16,6 +16,13 @@ export function detectionBuckets(findings: Finding[], range: Range, reference: n
   const dated = [...new Map(findings.map(finding => [finding.id, finding])).values()]
     .map(finding => ({ ...finding, time: Date.parse(finding.detectedAt) }))
     .filter(finding => Number.isFinite(finding.time));
+  if (!dated.length) {
+    return {
+      buckets: [],
+      hourly: false,
+      invalidCount: findings.length,
+    };
+  }
   const latest = dated.length ? Math.max(...dated.map(f => f.time)) : reference;
   const earliest = dated.length ? Math.min(...dated.map(f => f.time)) : reference;
   let step: number;
@@ -50,10 +57,9 @@ function timeLabel(time: number, hourly = false) {
     : { month: "short", day: "numeric", timeZone: "UTC" }).format(time);
 }
 
-function Timeline({ findings, isDemo, checkedAt }: { findings: Finding[]; isDemo: boolean; checkedAt?: string }) {
+function Timeline({ findings, checkedAt }: { findings: Finding[]; checkedAt?: string }) {
   const [range, setRange] = useState<Range>("feed");
   const [active, setActive] = useState<number | null>(null);
-  const [clock] = useState(() => Date.now());
   const plot = useRef<HTMLDivElement>(null);
   const [plotWidth, setPlotWidth] = useState(740);
   useEffect(() => {
@@ -62,7 +68,7 @@ function Timeline({ findings, isDemo, checkedAt }: { findings: Finding[]; isDemo
     observer.observe(plot.current);
     return () => observer.disconnect();
   }, []);
-  const reference = checkedAt && Number.isFinite(Date.parse(checkedAt)) ? Date.parse(checkedAt) : clock;
+  const reference = checkedAt && Number.isFinite(Date.parse(checkedAt)) ? Date.parse(checkedAt) : 0;
   const { buckets, hourly, invalidCount } = useMemo(() => detectionBuckets(findings, range, reference), [findings, range, reference]);
   const max = Math.max(2, ...buckets.map(b => b.total));
   const total = buckets.reduce((sum, b) => sum + b.total, 0);
@@ -88,7 +94,7 @@ function Timeline({ findings, isDemo, checkedAt }: { findings: Finding[]; isDemo
           ))}
         </div>
       </div>
-      <div className="chart-summary"><strong>{total.toString().padStart(2, "0")}</strong><div><span>dated findings</span><small>{isDemo ? "Illustrative feed" : "Current feed snapshot"} · UTC</small></div><span className="peak-label">Peak <b>{peak}</b><ArrowUpRight size={13} /></span></div>
+      <div className="chart-summary"><strong>{total.toString().padStart(2, "0")}</strong><div><span>dated findings</span><small>{findings.length ? "Current feed snapshot" : "Awaiting completed feed"} · UTC</small></div><span className="peak-label">Peak <b>{peak}</b><ArrowUpRight size={13} /></span></div>
       <div className="timeline-graphic" ref={plot}>
         <svg viewBox={`0 0 ${plotWidth} 251`} role="group" aria-label="Findings grouped by detection date. Focus a column for exact counts.">
           <defs>
@@ -97,6 +103,7 @@ function Timeline({ findings, isDemo, checkedAt }: { findings: Finding[]; isDemo
           <path d={`M${left},${baseline} H${right} l12,14 H${left + 12} Z`} fill={`url(#${chartId}-floor)`} />
           {[0, 1, 2].map(i => { const value = Math.ceil(max * i / 2); const y = baseline - value / max * chartHeight; return <g key={i}><line x1={left} x2={right} y1={y} y2={y} stroke="#e2e5db" strokeDasharray={i ? "3 5" : "0"}/><text x={left - 12} y={y + 4} textAnchor="end" className="chart-axis">{value}</text></g>; })}
           <text x={left} y="23" className="chart-unit">FINDINGS</text>
+          {!buckets.length && <text x={(left + right) / 2} y="130" textAnchor="middle" className="chart-empty-label">No dated findings</text>}
           {buckets.map((bucket, index) => {
             const x = left + cell * index + (cell - barWidth) / 2;
             let accumulated = 0;
@@ -127,7 +134,7 @@ function Timeline({ findings, isDemo, checkedAt }: { findings: Finding[]; isDemo
         <span className="chart-readout-hint">Select a column</span>
       </div>
       <div className="chart-footnote">Dates supplied by the current feed. Empty periods do not confirm an absence of threats.{invalidCount > 0 ? ` ${invalidCount} undated findings excluded.` : ''}</div>
-      <details className="chart-data"><summary>View chart data <ChevronDown size={12}/></summary><div className="chart-data-scroll"><table><caption>{isDemo ? 'Illustrative findings' : 'Current snapshot'} by detection time (UTC)</caption><thead><tr><th>Period start</th><th>Total</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th></tr></thead><tbody>{buckets.map(b => <tr key={b.start}><td>{new Date(b.start).toISOString().slice(0, 16).replace('T', ' ')}</td><td>{b.total}</td>{severityOrder.map(s => <td key={s}>{b.counts[s]}</td>)}</tr>)}</tbody></table></div></details>
+      <details className="chart-data"><summary>View chart data <ChevronDown size={12}/></summary><div className="chart-data-scroll"><table><caption>Findings by detection time (UTC)</caption><thead><tr><th>Period start</th><th>Total</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th></tr></thead><tbody>{buckets.map(b => <tr key={b.start}><td>{new Date(b.start).toISOString().slice(0, 16).replace('T', ' ')}</td><td>{b.total}</td>{severityOrder.map(s => <td key={s}>{b.counts[s]}</td>)}</tr>)}</tbody></table></div></details>
     </section>
   );
 }
@@ -143,12 +150,11 @@ function SeverityChart({ findings }: { findings: Finding[] }) {
   const [active, setActive] = useState<Severity | null>(null);
   const chartId = useId();
   const counts = Object.fromEntries(severityOrder.map(s => [s, findings.filter(f => f.severity === s).length])) as Record<Severity, number>;
-  let cursor = -Math.PI * .75;
-  const segments = severityOrder.filter(s => counts[s]).map(s => {
-    const start = cursor;
-    cursor += counts[s] / findings.length * Math.PI * 2;
-    return { severity: s, start: start + .012, end: cursor - .012 };
-  });
+  const segments = severityOrder.filter(s => counts[s]).reduce<{ severity: Severity; start: number; end: number }[]>((segments, severity) => {
+    const cursor = segments.length ? segments[segments.length - 1].end + .012 : -Math.PI * .75;
+    const end = cursor + counts[severity] / findings.length * Math.PI * 2;
+    return [...segments, { severity, start: cursor + .012, end: end - .012 }];
+  }, []);
   return <section className="analytics-panel severity-panel" aria-labelledby={`${chartId}-title`}>
     <div className="panel-heading"><div><p className="panel-eyebrow"><Layers3 size={14}/> Risk distribution</p><h2 id={`${chartId}-title`}>Severity breakdown</h2></div><span className="panel-index">02</span></div>
     <div className="severity-graphic">
@@ -170,6 +176,6 @@ function SeverityChart({ findings }: { findings: Finding[] }) {
   </section>;
 }
 
-export function ThreatAnalytics(props: { findings: Finding[]; isDemo: boolean; checkedAt?: string }) {
+export function ThreatAnalytics(props: { findings: Finding[]; checkedAt?: string }) {
   return <div className="analytics-grid"><Timeline {...props}/><SeverityChart findings={props.findings}/></div>;
 }
