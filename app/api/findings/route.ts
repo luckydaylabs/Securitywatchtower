@@ -12,7 +12,7 @@ const DEFAULT_AGENT_NAMES = {
 } as const;
 const NIMBLE_REQUEST_TIMEOUT_MS = 7_000;
 const MAX_FINDINGS = 50;
-const MAX_PIPELINE_CANDIDATES = 10;
+const MAX_PIPELINE_CANDIDATES = 8;
 const AUTOMATION_USER_AGENT = /(?:bot|crawler|spider|scraper|curl|wget|python|httpx|aiohttp|scrapy|go-http-client|libwww|headless|phantomjs|selenium|playwright|puppeteer)/i;
 const TRUSTED_SOURCE_DOMAINS = [
   "support.apple.com",
@@ -607,8 +607,6 @@ function orchestratorInvestigationPayload(investigation: ReturnType<typeof parse
       findingId: assessment.findingId,
       status: assessment.status,
       confidence: assessment.confidence,
-      validatedFacts: assessment.validatedFacts.slice(0, 2).map((fact) => clipStageText(fact, 180)),
-      unresolvedQuestions: assessment.unresolvedQuestions.slice(0, 2).map((question) => clipStageText(question, 180)),
       recommendedSeverity: assessment.recommendedSeverity,
       citations: assessment.citations.slice(0, 2).map((citation) => ({
         title: clipStageText(citation.title, 120),
@@ -624,11 +622,11 @@ function verificationInputPayload(verification: ReturnType<typeof parseVerifierR
       findingId: check.findingId,
       verdict: check.verdict,
       confidence: check.confidence,
-      claimChecks: check.claimChecks.slice(0, 4).map((claim) => ({
-        claim: clipStageText(claim.claim, 220),
+      claimChecks: check.claimChecks.slice(0, 2).map((claim) => ({
+        claim: clipStageText(claim.claim, 180),
         status: claim.status,
       })),
-      notes: clipStageText(check.notes, 420),
+      notes: clipStageText(check.notes, 260),
     })),
   };
 }
