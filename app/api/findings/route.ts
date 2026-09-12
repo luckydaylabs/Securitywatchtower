@@ -518,8 +518,51 @@ function parseFindingStage(value: unknown, stage: PipelineStage) {
 }
 
 function parseInvestigatorResult(payload: unknown) {
-  const parsed = investigatorResultSchema.safeParse(payload);
-  if (!parsed.success) throw new Error("Nimble investigator returned an invalid result.");
+  const normalizedPayload = isRecord(payload) && Array.isArray(payload.assessments)
+    ? {
+        ...payload,
+        assessments: payload.assessments.map((assessment) => {
+          if (!isRecord(assessment)) return assessment;
+
+          const validatedFacts = assessment.validatedFacts ?? assessment.validated_facts;
+          const unresolvedQuestions = assessment.unresolvedQuestions ?? assessment.unresolved_questions;
+          const citations = Array.isArray(assessment.citations)
+            ? assessment.citations.map((citation) =>
+                isRecord(citation) && typeof citation.title === "string"
+                  ? { ...citation, title: clipStageText(citation.title, 240) }
+                  : citation,
+              )
+            : [];
+
+          return {
+            ...assessment,
+            findingId: stringField(assessment, "findingId", "finding_id") ?? assessment.findingId,
+            validatedFacts: Array.isArray(validatedFacts)
+              ? validatedFacts
+                  .filter((fact): fact is string => typeof fact === "string")
+                  .slice(0, 30)
+                  .map((fact) => clipStageText(fact, 800))
+              : [],
+            unresolvedQuestions: Array.isArray(unresolvedQuestions)
+              ? unresolvedQuestions
+                  .filter((question): question is string => typeof question === "string")
+                  .slice(0, 30)
+                  .map((question) => clipStageText(question, 800))
+              : [],
+            recommendedSeverity: stringField(assessment, "recommendedSeverity", "recommended_severity") ?? assessment.recommendedSeverity,
+            citations: citations.slice(0, 20),
+          };
+        }),
+      }
+    : payload;
+  const parsed = investigatorResultSchema.safeParse(normalizedPayload);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.path.join(".") || "result"}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`Nimble investigator returned an invalid result${issues ? ` (${issues})` : ""}.`);
+  }
 
   return {
     assessments: parsed.data.assessments.map((assessment) => ({
