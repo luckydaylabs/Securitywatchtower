@@ -2,7 +2,7 @@ import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { watchtowerSnapshots } from "@/db/schema";
-import { type CheckTrigger, type Finding, type SnapshotHistory } from "@/lib/watchtower";
+import { type CheckTrigger, type Finding, type NimbleTrust, type SnapshotHistory } from "@/lib/watchtower";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +20,13 @@ const MAX_BASELINE_FINDINGS = 8;
 const DEFAULT_LOOKBACK_MS = 72 * 60 * 60 * 1000;
 const MAX_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_BASELINE_QUERY_CHARS = 5_000;
+// Keep a safety margin below the provider's observed 10,000-character request limit.
 const MAX_NIMBLE_INPUT_CHARS = 9_500;
+const MAX_TRUST_SOURCES = 40;
+const MAX_TRUST_CLAIMS = 40;
+const MAX_TRUST_DEPTH = 4;
+const MAX_TRUST_KEYS = 40;
+const MAX_TRUST_TEXT_CHARS = 2_000;
 const AUTOMATION_USER_AGENT = /(?:bot|crawler|spider|scraper|curl|wget|python|httpx|aiohttp|scrapy|go-http-client|libwww|headless|phantomjs|selenium|playwright|puppeteer)/i;
 const TRUSTED_SOURCE_DOMAINS = [
   "support.apple.com",
@@ -320,6 +326,7 @@ function storedSnapshotFromRow(row: SnapshotRow): StoredSnapshot {
   return {
     ...snapshotHistoryFromRow(row),
     findings,
+    trust: storedTrustFromRow(row.trustJson),
     message: row.message,
   };
 }
@@ -390,6 +397,7 @@ async function persistSnapshot(
   findings: Finding[],
   message: string,
   trigger: CheckTrigger,
+  trust?: NimbleTrust,
 ) {
   const db = getDb();
   const checkedAt = new Date().toISOString();
@@ -405,6 +413,7 @@ async function persistSnapshot(
       criticalCount: findings.filter((finding) => finding.severity === "critical").length,
       platformCount: new Set(findings.map((finding) => finding.platform)).size,
       findingsJson: JSON.stringify(findings),
+      trustJson: trust ? JSON.stringify(trust) : null,
       message,
       createdAt: checkedAt,
     })
@@ -489,11 +498,6 @@ type NimbleConfig = {
   roles: Record<PipelineStage, NimbleRole>;
 };
 
-type NimbleTrust = {
-  confidence?: string;
-  sources: Array<{ title: string; url: string }>;
-};
-
 type NimbleRunReference = {
   stage: PipelineStage;
   agentId: string;
@@ -508,6 +512,7 @@ type PipelineContext = Partial<Record<PipelineStage, NimbleRunReference>> & {
 type StoredSnapshot = SnapshotHistory & {
   findings: Finding[];
   message: string;
+  trust?: NimbleTrust;
 };
 
 type SnapshotRow = typeof watchtowerSnapshots.$inferSelect;
@@ -547,22 +552,33 @@ function getNimbleConfig(): NimbleConfig | null {
 function getAgentOutput(payload: unknown, depth = 0): unknown {
   if (depth > 5 || !isRecord(payload)) return payload;
 
+  const parseJsonText = (value: string) => {
+    const normalizedText = value
+      .trim()
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/i, "");
+    try {
+      return JSON.parse(normalizedText);
+    } catch {
+      return null;
+    }
+  };
+
   if (payload.type === "json") {
-    return payload.data ?? payload.value ?? payload.content ?? payload.output ?? null;
+    const value = payload.data ?? payload.value ?? payload.content ?? payload.output ?? null;
+    return typeof value === "string" ? parseJsonText(value) : value;
   }
-  if (payload.type === "text") return null;
+  if (payload.type === "text") {
+    const text = payload.data ?? payload.value ?? payload.content ?? payload.output;
+    if (typeof text !== "string") return null;
+    return parseJsonText(text);
+  }
 
   for (const key of ["output", "result", "data", "content"]) {
     if (!(key in payload)) continue;
 
     const value: unknown = payload[key];
-    if (typeof value === "string") {
-      try {
-        return JSON.parse(value);
-      } catch {
-        return null;
-      }
-    }
+    if (typeof value === "string") return parseJsonText(value);
     if (value !== payload) return getAgentOutput(value, depth + 1);
   }
 
@@ -590,6 +606,31 @@ function safeHttpUrl(value: unknown) {
   }
 }
 
+type SafeTrustValue = string | number | boolean | null | SafeTrustValue[] | { [key: string]: SafeTrustValue };
+
+function normalizeTrustValue(value: unknown, depth = 0): SafeTrustValue | undefined {
+  if (depth > MAX_TRUST_DEPTH || value === undefined) return undefined;
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "string") return clipStageText(value, MAX_TRUST_TEXT_CHARS);
+
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, MAX_TRUST_KEYS)
+      .map((entry) => normalizeTrustValue(entry, depth + 1))
+      .filter((entry): entry is SafeTrustValue => entry !== undefined);
+  }
+
+  if (!isRecord(value)) return undefined;
+
+  const normalized: Record<string, SafeTrustValue> = {};
+  for (const [key, entry] of Object.entries(value).slice(0, MAX_TRUST_KEYS)) {
+    const safeValue = normalizeTrustValue(entry, depth + 1);
+    if (safeValue !== undefined) normalized[clipStageText(key, 120)] = safeValue;
+  }
+  return normalized;
+}
+
 function normalizeTrust(payload: unknown): NimbleTrust | undefined {
   if (!isRecord(payload)) return undefined;
   const trust = isRecord(payload.trust)
@@ -600,20 +641,53 @@ function normalizeTrust(payload: unknown): NimbleTrust | undefined {
   if (!trust) return undefined;
 
   const confidence = stringField(trust, "confidence");
+  const reasoning = stringField(trust, "reasoning");
   const sources = Array.isArray(trust.sources)
     ? trust.sources
         .filter(isRecord)
         .map((source) => {
           const title = stringField(source, "title");
           const url = safeHttpUrl(source.url);
-          return title && url ? { title, url } : null;
+          const type = stringField(source, "type");
+          const sourceCategory = stringField(source, "source_category", "sourceCategory");
+          return title && url
+            ? {
+                title,
+                url,
+                ...(type ? { type } : {}),
+                ...(sourceCategory ? { source_category: sourceCategory } : {}),
+              }
+            : null;
         })
-        .filter((source): source is { title: string; url: string } => Boolean(source))
-        .slice(0, MAX_FINDINGS)
+        .filter((source): source is NimbleTrust["sources"][number] => Boolean(source))
+        .slice(0, MAX_TRUST_SOURCES)
+    : [];
+  const claims = Array.isArray(trust.claims)
+    ? trust.claims
+        .map((claim) => normalizeTrustValue(claim))
+        .filter((claim): claim is { [key: string]: SafeTrustValue } => isRecord(claim))
+        .slice(0, MAX_TRUST_CLAIMS)
     : [];
 
-  if (!confidence && !sources.length) return undefined;
-  return { ...(confidence ? { confidence } : {}), sources };
+  if (!confidence && !reasoning && !sources.length && !claims.length) return undefined;
+  return {
+    ...(confidence ? { confidence } : {}),
+    ...(reasoning ? { reasoning: clipStageText(reasoning, MAX_TRUST_TEXT_CHARS) } : {}),
+    sources,
+    claims,
+  };
+}
+
+function storedTrustFromRow(value: string | null) {
+  if (!value) return undefined;
+
+  try {
+    const trust = normalizeTrust({ trust: JSON.parse(value) });
+    if (!trust) throw new Error("empty trust metadata");
+    return trust;
+  } catch {
+    throw new Error("Watchtower stored trust data is invalid.");
+  }
 }
 
 function normalizeFindings(value: unknown): Finding[] {
@@ -678,7 +752,15 @@ function parseFindingStage(value: unknown, stage: PipelineStage) {
   if (!isRecord(value) || !Array.isArray(value.findings)) {
     throw new Error(`Nimble ${stage} stage returned an invalid findings payload.`);
   }
-  return normalizeFindings(value);
+  if (value.findings.length > MAX_FINDINGS) {
+    throw new Error(`Nimble ${stage} stage returned too many findings.`);
+  }
+
+  const findings = normalizeFindings(value);
+  if (findings.length !== value.findings.length) {
+    throw new Error(`Nimble ${stage} stage returned one or more invalid or duplicate findings.`);
+  }
+  return findings;
 }
 
 function parseInvestigatorResult(payload: unknown) {
@@ -1023,11 +1105,28 @@ async function startNimbleStage(stage: PipelineStage, input: string): Promise<Ni
   }
 
   const created = (await createResponse.json()) as Record<string, unknown>;
+  if (created.status !== undefined || created.state !== undefined) {
+    readNimbleRunState(created, stage);
+  }
   const runId = stringField(created, "id", "run_id");
   const resolvedAgentId = stringField(created, "web_search_agent_id", "agent_id") ?? role.agentId;
   if (!runId || !resolvedAgentId) throw new Error(`Nimble returned an incomplete ${stage} run.`);
 
   return { stage, agentId: resolvedAgentId, runId };
+}
+
+type NimbleRunState = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+function readNimbleRunState(payload: Record<string, unknown>, stage: PipelineStage): NimbleRunState {
+  const rawState = stringField(payload, "status", "state");
+  if (!rawState) throw new Error(`Nimble ${stage} status response did not include a run status.`);
+
+  const state = rawState.toLowerCase();
+  if (!(["queued", "running", "completed", "failed", "cancelled"] as string[]).includes(state)) {
+    throw new Error(`Nimble ${stage} returned an unsupported run status: ${rawState}.`);
+  }
+
+  return state as NimbleRunState;
 }
 
 async function readNimbleStageRun(run: NimbleRunReference) {
@@ -1042,11 +1141,14 @@ async function readNimbleStageRun(run: NimbleRunReference) {
   if (!statusResponse.ok) throw new Error(`Nimble status check failed (${statusResponse.status}).`);
 
   const status = (await statusResponse.json()) as Record<string, unknown>;
-  const state = String(status.status ?? status.state ?? "").toLowerCase();
-  if (state === "completed" || state === "succeeded") {
+  const state = readNimbleRunState(status, run.stage);
+  if (state === "completed") {
     const resultResponse = await fetchWithTimeout(resultUrl, {
       headers: { Authorization: `Bearer ${config.apiKey}` },
     });
+    if (resultResponse.status === 409) {
+      return { state: "pending" as const, message: `Nimble ${run.stage} completed-status is settling; checking its status again.` };
+    }
     if (!resultResponse.ok) throw new Error(`Nimble result retrieval failed (${resultResponse.status}).`);
     const resultPayload = await resultResponse.json();
     const payload = getAgentOutput(resultPayload);
@@ -1054,11 +1156,15 @@ async function readNimbleStageRun(run: NimbleRunReference) {
     return { state: "completed" as const, payload, trust: normalizeTrust(resultPayload) };
   }
 
-  if (["failed", "cancelled"].includes(state)) {
+  if (state === "failed" || state === "cancelled") {
     throw new Error(`Nimble ${run.stage} stage ${state}.`);
   }
 
-  return { state: "pending" as const, message: `Nimble ${run.stage} stage is still running.` };
+  if (state === "queued" || state === "running") {
+    return { state: "pending" as const, message: `Nimble ${run.stage} stage is ${state}.` };
+  }
+
+  throw new Error(`Nimble ${run.stage} returned an unsupported run status.`);
 }
 
 function stageFromQuery(value: string | null): PipelineStage {
@@ -1200,8 +1306,9 @@ async function advancePipeline(
         [],
         "Nimble completed the source check. No new or materially updated announcements passed the change window.",
         context.trigger ?? "manual",
+        trust,
       );
-      return completedResponse(snapshot.findings, snapshot.message, trust, snapshot.checkedAt, snapshot.history, snapshot);
+      return completedResponse(snapshot.findings, snapshot.message, snapshot.trust, snapshot.checkedAt, snapshot.history, snapshot);
     }
 
     const next = await startNimbleStage("investigator", investigatorInput(selectPipelineCandidates(findings), context.baseline));
@@ -1267,8 +1374,9 @@ async function advancePipeline(
       ? "Nimble completed the monitor, investigation, verification, and orchestration pipeline."
       : "Nimble completed the review pipeline. No new or materially updated announcements passed verification.",
     context.trigger ?? "manual",
+    trust,
   );
-  return completedResponse(snapshot.findings, snapshot.message, trust, snapshot.checkedAt, snapshot.history, snapshot);
+  return completedResponse(snapshot.findings, snapshot.message, snapshot.trust, snapshot.checkedAt, snapshot.history, snapshot);
 }
 
 export async function POST(request: Request) {
@@ -1312,7 +1420,7 @@ export async function GET(request: Request) {
     if (!agentId && !runId && !stageParam) {
       const history = await readSnapshotHistory();
       const snapshot = snapshotId ? await readSnapshotById(snapshotId) : await readLatestSnapshot();
-      return snapshot ? completedResponse(snapshot.findings, snapshot.message, undefined, snapshot.checkedAt, history, snapshot) : idleResponse(history);
+      return snapshot ? completedResponse(snapshot.findings, snapshot.message, snapshot.trust, snapshot.checkedAt, history, snapshot) : idleResponse(history);
     }
 
     const config = getNimbleConfig();

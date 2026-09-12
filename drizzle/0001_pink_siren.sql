@@ -1,0 +1,1 @@
+ALTER TABLE `watchtower_snapshots` ADD `trust_json` text;

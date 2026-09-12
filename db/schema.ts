@@ -10,6 +10,7 @@ export const watchtowerSnapshots = sqliteTable(
     criticalCount: integer("critical_count").notNull().default(0),
     platformCount: integer("platform_count").notNull().default(0),
     findingsJson: text("findings_json").notNull(),
+    trustJson: text("trust_json"),
     message: text("message").notNull(),
     createdAt: text("created_at").notNull(),
   },

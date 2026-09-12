@@ -598,6 +598,29 @@ html { scroll-behavior: smooth; scroll-padding-top: 24px; }
 .refresh-button-checking .refresh-button-copy { width: 100%; justify-content: center; }
 .refresh-button-checking .refresh-progress { width: 100%; }
 
+.trust-panel { margin-top: 23px; padding-top: 18px; border-top: 1px solid #d9e0cc; }
+.trust-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.trust-heading > div { display: flex; align-items: center; gap: 7px; color: #657951; }
+.trust-heading h3 { margin: 0; color: #4f603f; font-size: 13px; font-weight: 600; }
+.trust-heading > span { padding: 3px 6px; border-radius: 4px; background: #dce5d0; color: #61764a; font-family: var(--font-mono); font-size: 9px; text-transform: uppercase; }
+.trust-summary { margin: 8px 0 0; color: #7d8d6f; font-family: var(--font-mono); font-size: 10px; }
+.trust-reasoning { margin: 9px 0 0; color: #819075; font-size: 11px; line-height: 1.5; }
+.trust-details { margin-top: 12px; }
+.trust-details summary { cursor: pointer; color: #647b4c; font-family: var(--font-mono); font-size: 10px; list-style: none; }
+.trust-details summary::-webkit-details-marker { display: none; }
+.trust-details summary::before { content: "+"; display: inline-block; width: 16px; color: #9aaa8d; }
+.trust-details[open] summary::before { content: "−"; }
+.trust-source-list, .trust-claim-list { display: grid; gap: 7px; margin-top: 12px; }
+.trust-source-list a { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; color: #5e7546; font-size: 11px; line-height: 1.4; text-decoration: none; }
+.trust-source-list a:hover { color: #a74a22; }
+.trust-source-list svg { flex: 0 0 auto; margin-top: 2px; color: #8ea179; }
+.trust-claim-list { padding-top: 11px; border-top: 1px solid #d9e0cc; }
+.trust-claim { padding: 7px 8px; border-radius: 5px; background: #e5eadb; }
+.trust-claim > div { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.trust-claim strong { color: #5d7047; font-family: var(--font-mono); font-size: 9px; font-weight: 500; overflow-wrap: anywhere; }
+.trust-claim > div > span { color: #7d8e6c; font-family: var(--font-mono); font-size: 9px; text-transform: uppercase; }
+.trust-claim p { margin: 5px 0 0; color: #718064; font-size: 10px; line-height: 1.45; }
+
 @media (max-width: 640px) {
   .analytics-context { flex-direction: column; align-items: flex-start; gap: 6px; }
   .refresh-button-checking .refresh-progress { width: 100%; }

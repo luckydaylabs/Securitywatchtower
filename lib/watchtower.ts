@@ -11,6 +11,20 @@ export type SnapshotHistory = {
   platformCount: number;
 };
 
+export type NimbleTrustSource = {
+  title: string;
+  url: string;
+  type?: string;
+  source_category?: string;
+};
+
+export type NimbleTrust = {
+  confidence?: string;
+  reasoning?: string;
+  sources: NimbleTrustSource[];
+  claims: Array<Record<string, unknown>>;
+};
+
 export type Finding = {
   id: string;
   platform: Exclude<PlatformKey, "all">;

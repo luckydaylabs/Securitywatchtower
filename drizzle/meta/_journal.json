@@ -8,6 +8,13 @@
       "when": 1789192301852,
       "tag": "0000_romantic_human_cannonball",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1789196727354,
+      "tag": "0001_pink_siren",
+      "breakpoints": true
     }
   ]
 }

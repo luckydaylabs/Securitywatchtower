@@ -24,6 +24,7 @@ import {
   SOURCE_CATALOG,
   type CheckTrigger,
   type Finding,
+  type NimbleTrust,
   type PlatformKey,
   type Severity,
   type SnapshotHistory,
@@ -66,6 +67,7 @@ type FeedResponse = {
   message?: string;
   mode?: FeedMode;
   selectedSnapshot?: SnapshotHistory;
+  trust?: NimbleTrust;
   stage?: PipelineStage;
   context?: PipelineContext;
   pipelineStages?: PipelineStage[];
@@ -73,13 +75,16 @@ type FeedResponse = {
   status?: "running" | "completed";
 };
 
-type ActiveRun = RunReference & { context: PipelineContext };
+type ActiveRun = RunReference & { context: PipelineContext; startedAt: number };
 type HistoryStatus = "loading" | "ready" | "empty" | "error";
 
 const pipelineStages: PipelineStage[] = ["monitor", "investigator", "verifier", "orchestrator"];
 const HOURLY_MONITORING_STORAGE_KEY = "watchtower.hourly-monitoring";
 const LAST_AUTOMATIC_CHECK_STORAGE_KEY = "watchtower.last-automatic-check";
 const HOURLY_MONITORING_INTERVAL_MS = 60 * 60 * 1000;
+const PIPELINE_INITIAL_POLL_DELAY_MS = 2_000;
+const PIPELINE_POLL_INTERVAL_MS = 15_000;
+const MAX_PIPELINE_WAIT_MS = 20 * 60 * 1000;
 
 function addPipelineContext(params: URLSearchParams, context: PipelineContext) {
   for (const stage of pipelineStages) {
@@ -148,6 +153,37 @@ function historyTime(value: string) {
   });
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function trustClaimPath(claim: Record<string, unknown>, index: number) {
+  for (const key of ["path", "json_path", "jsonPath"]) {
+    if (typeof claim[key] === "string" && claim[key].trim()) return claim[key].trim();
+  }
+  return `Claim ${index + 1}`;
+}
+
+function trustClaimConfidence(claim: Record<string, unknown>) {
+  return typeof claim.confidence === "string" && claim.confidence.trim() ? claim.confidence.trim() : null;
+}
+
+function trustClaimExcerpt(claim: Record<string, unknown>) {
+  const candidates: unknown[] = [];
+  if (typeof claim.excerpt === "string") candidates.push(claim.excerpt);
+  if (typeof claim.text === "string") candidates.push(claim.text);
+  if (Array.isArray(claim.excerpts)) candidates.push(...claim.excerpts);
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+    if (!isRecord(candidate)) continue;
+    for (const key of ["excerpt", "text", "content"]) {
+      if (typeof candidate[key] === "string" && candidate[key].trim()) return candidate[key].trim();
+    }
+  }
+  return null;
+}
+
 export default function Home() {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [history, setHistory] = useState<SnapshotHistory[]>([]);
@@ -155,6 +191,7 @@ export default function Home() {
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("loading");
   const [mode, setMode] = useState<FeedMode>("idle");
   const [lastChecked, setLastChecked] = useState<string>();
+  const [trust, setTrust] = useState<NimbleTrust>();
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
   const [hourlyMonitoringEnabled, setHourlyMonitoringEnabled] = useState<boolean | null>(null);
   const [checkTrigger, setCheckTrigger] = useState<CheckTrigger>("automatic");
@@ -190,12 +227,16 @@ export default function Home() {
 
       if (payload.mode === "live") {
         if (Array.isArray(payload.findings)) setFindings(payload.findings);
+        setTrust(payload.trust);
         if (Array.isArray(payload.history)) {
           setHistory(payload.history);
           setHistoryStatus(payload.history.length ? "ready" : "empty");
           setHistoryError(undefined);
         }
         if (payload.selectedSnapshot?.id) setSelectedSnapshotId(payload.selectedSnapshot.id);
+        setReviewedIds(new Set());
+        setExpandedId(null);
+        setTechnicalId(null);
         setMode("live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setAnnouncement(payload.message ?? "Findings refreshed.");
@@ -212,6 +253,7 @@ export default function Home() {
         stage: payload.stage,
         runId: payload.runId,
         agentId: payload.agentId,
+        startedAt: Date.now(),
         context: payload.context ?? {
           monitor: { stage: "monitor", runId: payload.runId, agentId: payload.agentId },
         },
@@ -247,6 +289,7 @@ export default function Home() {
         setHistoryStatus(payload.history.length ? "ready" : "empty");
       }
       if (Array.isArray(payload.findings)) setFindings(payload.findings);
+      setTrust(payload.trust);
       if (payload.mode === "live") {
         setMode("live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
@@ -331,6 +374,10 @@ export default function Home() {
 
     async function pollRun() {
       try {
+        if (Date.now() - run.startedAt >= MAX_PIPELINE_WAIT_MS) {
+          throw new Error("The Nimble monitoring pipeline exceeded its 20-minute wait limit.");
+        }
+
         const params = new URLSearchParams({
           agentId: run.agentId,
           runId: run.runId,
@@ -354,12 +401,13 @@ export default function Home() {
                 stage: payload.stage,
                 runId: payload.runId,
                 agentId: payload.agentId,
+                startedAt: run.startedAt,
                 context: nextContext,
               });
               return;
             }
           }
-          timer = window.setTimeout(() => void pollRun(), 10_000);
+          timer = window.setTimeout(() => void pollRun(), PIPELINE_POLL_INTERVAL_MS);
           return;
         }
 
@@ -374,6 +422,9 @@ export default function Home() {
           setHistoryError(undefined);
         }
         if (payload.selectedSnapshot?.id) setSelectedSnapshotId(payload.selectedSnapshot.id);
+        setReviewedIds(new Set());
+        setExpandedId(null);
+        setTechnicalId(null);
         setMode(payload.mode ?? "live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setAnnouncement(payload.message ?? "Findings refreshed.");
@@ -391,7 +442,7 @@ export default function Home() {
       }
     }
 
-    timer = window.setTimeout(() => void pollRun(), 2_000);
+    timer = window.setTimeout(() => void pollRun(), PIPELINE_INITIAL_POLL_DELAY_MS);
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
@@ -820,6 +871,43 @@ export default function Home() {
           <div className="sources-heading"><Radio size={17}/><h2 id="sources-title">Source catalog</h2><span>{SOURCE_CATALOG.length}</span></div>
           <p className="sources-description">Authoritative advisories used by the research agent.</p>
           <div className="source-cards">{SOURCE_CATALOG.map((source, index) => <a key={source.name} href={source.url} target="_blank" rel="noopener noreferrer"><span className="source-number">0{index + 1}</span><span>{source.name}</span><ExternalLink size={13}/></a>)}</div>
+          {trust ? (
+            <section className="trust-panel" aria-labelledby="trust-title">
+              <div className="trust-heading">
+                <div><ShieldCheck size={15} aria-hidden="true" /><h3 id="trust-title">Evidence trace</h3></div>
+                <span>{trust.confidence ?? "Recorded"}</span>
+              </div>
+              <p className="trust-summary">{trust.claims.length} claim checks · {trust.sources.length} cited sources</p>
+              {trust.reasoning ? <p className="trust-reasoning">{trust.reasoning}</p> : null}
+              <details className="trust-details">
+                <summary>View citation trace</summary>
+                {trust.sources.length ? (
+                  <div className="trust-source-list">
+                    {trust.sources.map((source) => (
+                      <a key={`${source.url}-${source.title}`} href={source.url} target="_blank" rel="noopener noreferrer">
+                        <span>{source.title}</span>
+                        <ExternalLink size={12} aria-hidden="true" />
+                      </a>
+                    ))}
+                  </div>
+                ) : null}
+                {trust.claims.length ? (
+                  <div className="trust-claim-list">
+                    {trust.claims.slice(0, 8).map((claim, index) => {
+                      const excerpt = trustClaimExcerpt(claim);
+                      const confidence = trustClaimConfidence(claim);
+                      return (
+                        <div key={`${trustClaimPath(claim, index)}-${index}`} className="trust-claim">
+                          <div><strong>{trustClaimPath(claim, index)}</strong>{confidence ? <span>{confidence}</span> : null}</div>
+                          {excerpt ? <p>{excerpt}</p> : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </details>
+            </section>
+          ) : null}
           <div className="research-state"><div><Activity size={15}/><span>Research status</span><span className={`research-status ${isRefreshing ? 'research-running' : ''}`}>{isRefreshing ? 'Running' : mode === 'fallback' ? 'Unavailable' : mode === 'pending' ? 'Queued' : mode === 'live' ? 'Complete' : 'Standby'}</span></div><p>{isRefreshing ? 'Nimble is checking public advisories.' : mode === 'fallback' ? 'Nimble is unavailable. Check the runtime configuration and retry.' : mode === 'live' ? 'The latest completed check supplied this snapshot.' : 'Run a check to collect current public advisories.'}</p><div className="research-progress" aria-hidden="true"><span className={isRefreshing ? 'progress-scanning' : ''}/></div><small>Run mode <strong>{hourlyMonitoringEnabled === true ? 'Hourly' : 'Manual'}</strong></small></div>
         </aside>
         </div>
