@@ -11,6 +11,11 @@ import {
   Clock3,
   ExternalLink,
   Info,
+  LayoutDashboard,
+  Layers3,
+  Radar,
+  Radio,
+  ScanLine,
   RefreshCw,
   ShieldCheck,
   TriangleAlert,
@@ -24,6 +29,7 @@ import {
   type Severity,
 } from "@/lib/watchtower";
 import { VulnerabilityTicker } from "@/components/vulnerability-ticker";
+import { ThreatAnalytics } from "@/components/threat-analytics";
 
 type FeedMode = "demo" | "live" | "fallback" | "pending";
 
@@ -90,10 +96,11 @@ function findingTime(value: string) {
 export default function Home() {
   const [findings, setFindings] = useState<Finding[]>(DEMO_FINDINGS);
   const [mode, setMode] = useState<FeedMode>("demo");
+  const [dataIsDemo, setDataIsDemo] = useState(true);
   const [lastChecked, setLastChecked] = useState<string>();
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
   const [selectedPlatform, setSelectedPlatform] = useState<PlatformKey>("all");
-  const [expandedId, setExpandedId] = useState<string | null>(DEMO_FINDINGS[0].id);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [technicalId, setTechnicalId] = useState<string | null>(null);
   const [reviewedIds, setReviewedIds] = useState<Set<string>>(new Set());
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -122,6 +129,7 @@ export default function Home() {
 
       if (payload.mode === "demo") {
         if (Array.isArray(payload.findings)) setFindings(payload.findings);
+        setDataIsDemo(true);
         setMode("demo");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setAnnouncement(payload.message ?? "Showing the demo findings.");
@@ -132,6 +140,7 @@ export default function Home() {
 
       if (payload.mode === "live") {
         if (Array.isArray(payload.findings)) setFindings(payload.findings);
+        setDataIsDemo(false);
         setMode("live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setAnnouncement(payload.message ?? "Findings refreshed.");
@@ -157,6 +166,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!activeRun) return;
+    const run = activeRun;
 
     let cancelled = false;
     let timer: number | undefined;
@@ -164,8 +174,8 @@ export default function Home() {
     async function pollRun() {
       try {
         const params = new URLSearchParams({
-          agentId: activeRun.agentId,
-          runId: activeRun.runId,
+          agentId: run.agentId,
+          runId: run.runId,
         });
         const response = await fetch(`/api/findings?${params.toString()}`, {
           cache: "no-store",
@@ -185,6 +195,7 @@ export default function Home() {
         }
 
         if (Array.isArray(payload.findings)) setFindings(payload.findings);
+        if (Array.isArray(payload.findings)) setDataIsDemo(payload.mode === "demo");
         setMode(payload.mode ?? "live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setAnnouncement(payload.message ?? "Findings refreshed.");
@@ -224,6 +235,9 @@ export default function Home() {
   }, [findings, reviewedIds, selectedPlatform]);
 
   const openCount = findings.filter((finding) => !reviewedIds.has(finding.id)).length;
+  const scopeFindings = selectedPlatform === "all" ? findings : findings.filter(finding => finding.platform === selectedPlatform);
+  const reviewedCount = findings.length - openCount;
+  const platformsRepresented = new Set(findings.map(finding => finding.platform)).size;
   const criticalCount = findings.filter(
     (finding) => finding.severity === "critical" && !reviewedIds.has(finding.id),
   ).length;
@@ -246,7 +260,9 @@ export default function Home() {
     setExpandedId(id);
     setTechnicalId(null);
     window.setTimeout(() => {
-      document.getElementById(`finding-${id}`)?.scrollIntoView({
+      const card = document.getElementById(`finding-${id}`);
+      card?.querySelector<HTMLButtonElement>(".finding-trigger")?.focus({ preventScroll: true });
+      card?.scrollIntoView({
         behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
         block: "center",
       });
@@ -255,21 +271,29 @@ export default function Home() {
 
   return (
     <main className="watchtower-shell">
+      <aside className="command-rail" aria-label="Dashboard navigation">
+        <a className="rail-brand" href="#overview" aria-label="Watchtower overview"><Radar size={28} /></a>
+        <nav>
+          <a href="#overview" aria-label="Overview" title="Overview"><LayoutDashboard size={21} /></a>
+          <a href="#findings-title" aria-label="Review queue" title="Review queue"><ShieldCheck size={21} /></a>
+          <a href="#sources" aria-label="Sources" title="Sources"><Radio size={21} /></a>
+        </nav>
+        <span className="rail-monogram" title="Nimble">N</span>
+      </aside>
       <header className="topbar">
         <div className="topbar-inner">
           <div className="brand-lockup">
             <div className="brand-mark" aria-hidden="true">
-              <ShieldCheck size={20} strokeWidth={2.2} />
+              <Radar size={20} strokeWidth={2.2} />
             </div>
             <div>
-              <p className="brand-kicker">NIMBLE / SECURITY</p>
-              <p className="brand-name">Watchtower</p>
+              <p className="brand-name">WATCHTOWER<span className="brand-slash">/</span><span className="brand-section">Security operations</span></p>
             </div>
           </div>
 
           <div className="topbar-status" aria-label="Monitoring status">
             <span className="status-dot" aria-hidden="true" />
-            <span>Monitoring active</span>
+            <span>{isRefreshing ? "Research in progress" : "On-demand monitoring"}</span>
             <span className="topbar-divider" aria-hidden="true" />
             <span>Last checked {formatCheckedAt(lastChecked)}</span>
           </div>
@@ -281,45 +305,48 @@ export default function Home() {
             disabled={isRefreshing}
           >
             <RefreshCw size={16} className={isRefreshing ? "spin" : ""} aria-hidden="true" />
-            <span>{isRefreshing ? "Checking" : "Refresh"}</span>
+            <span>{isRefreshing ? "Checking sources" : "Run new check"}</span>
           </button>
         </div>
       </header>
 
-      <div className="page-wrap">
+      <div className="page-wrap" id="overview">
+        <section className="command-heading" aria-labelledby="page-title">
+          <div><p className="section-kicker">Security intelligence</p><h1 id="page-title">Command center<span className="heading-period">.</span></h1></div>
+          <span className="operation-label"><ScanLine size={16} /> macOS · Windows · Linux · AI</span>
+        </section>
         <VulnerabilityTicker
           findings={findings.filter((finding) => !reviewedIds.has(finding.id))}
           mode={mode}
+          isDemo={dataIsDemo}
           onSelectFinding={focusFinding}
         />
-
-        <section className="intro-row" aria-labelledby="page-title">
-          <div>
-            <div className="eyebrow"><Activity size={14} aria-hidden="true" /> Threat review surface</div>
-            <h1 id="page-title">Security signals, reduced to next steps.</h1>
-            <p className="intro-copy">
-              A plain-language view of current findings across devices, systems, and AI prompt safety.
-            </p>
-          </div>
-          <div className="attention-summary" aria-live="polite">
-            <span className="summary-number">{openCount}</span>
-            <span>{openCount === 1 ? "finding" : "findings"} need attention</span>
-            {criticalCount > 0 ? <span className="summary-critical">{criticalCount} critical</span> : null}
-          </div>
-        </section>
 
         <div className={`feed-notice ${mode === "live" ? "feed-notice-live" : ""} ${mode === "pending" ? "feed-notice-pending" : ""}`} role="status">
           {mode === "live" ? <CheckCircle2 size={15} aria-hidden="true" /> : <Info size={15} aria-hidden="true" />}
           <span>
             {mode === "demo"
-              ? "Demo feed — connect Nimble to replace these examples with live findings."
+              ? "Demo data · Illustrative findings. Run a check to request current intelligence."
               : mode === "pending"
-                ? "Nimble research is running — this multi-source check can take several minutes."
+                ? `${dataIsDemo ? "Demo data shown" : "Previous findings shown"} · Nimble is checking sources. Research can take several minutes.`
                 : mode === "fallback"
-                  ? "Showing the last available view — the latest check needs attention."
-                  : "Live Nimble feed connected — findings are sourced from the configured monitoring agent."}
+                  ? `${dataIsDemo ? "Demo data shown" : "Previous findings shown"} · The latest check needs attention.`
+                  : "Nimble results · Findings from the latest completed check. Monitoring runs on demand."}
           </span>
+          <span className="feed-snapshot-tag">{dataIsDemo ? "DEMO SNAPSHOT" : "LATEST SNAPSHOT"}</span>
         </div>
+
+        <section className="metrics-grid" aria-label="Current feed overview">
+          <div className="metric-card"><div className="metric-heading"><span>Open findings</span><ShieldCheck size={17}/></div><div className="metric-value-row"><strong>{String(openCount).padStart(2, "0")}</strong><div className="metric-mini-bars" aria-hidden="true">{platformOrder.map(platform => <i key={platform} style={{ height: `${5 + countFor(platform) / Math.max(1, openCount) * 38}px` }}/>)}</div></div><div className="metric-caption">Across all platforms<span>{findings.length} in current feed</span></div></div>
+          <div className="metric-card metric-critical"><div className="metric-heading"><span>Critical alerts</span><TriangleAlert size={17}/></div><div className="metric-value-row"><strong>{String(criticalCount).padStart(2, "0")}</strong><span className="critical-marker" aria-hidden="true"><CircleAlert size={30} strokeWidth={1.25}/></span></div><div className="metric-caption">{criticalCount ? "Priority review required" : "No critical findings open"}<span className="critical-tag">P1</span></div></div>
+          <div className="metric-card"><div className="metric-heading"><span>Platforms represented</span><Layers3 size={17}/></div><div className="metric-value-row"><strong>{String(platformsRepresented).padStart(2, "0")}<small>/04</small></strong><div className="metric-platform-dots" aria-hidden="true">{platformOrder.map(platform => <i key={platform} className={findings.some(f => f.platform === platform) ? 'represented' : ''}/>)}</div></div><div className="metric-caption">OS & AI security<span>Current feed</span></div></div>
+          <div className="metric-card"><div className="metric-heading"><span>Reviewed</span><CheckCircle2 size={17}/></div><div className="metric-value-row"><strong>{String(reviewedCount).padStart(2, "0")}</strong><span className="review-fraction">of {findings.length}</span></div><div className="metric-caption">This session{reviewedCount > 0 ? <button type="button" onClick={() => { setReviewedIds(new Set()); setAnnouncement("Reviewed findings restored to the queue."); }}>Reset reviews</button> : <span>Ready for triage</span>}</div></div>
+        </section>
+
+        <div className="analytics-context"><span>01 <span className="context-rule"/> Intelligence overview</span><span>{selectedPlatform === "all" ? "All platforms" : PLATFORM_META[selectedPlatform].label} · {dataIsDemo ? "Demo data" : "Latest results"}</span></div>
+        <ThreatAnalytics findings={scopeFindings} isDemo={dataIsDemo} checkedAt={lastChecked}/>
+
+        <div className="queue-context"><span>02 <span className="context-rule"/> Platform scope</span><button type="button" onClick={() => setSelectedPlatform("all")} aria-pressed={selectedPlatform === "all"}>All platforms <ArrowUpRight size={13}/></button></div>
 
         <section className="platform-grid" aria-label="Monitoring scopes">
           {platformOrder.map((platform) => {
@@ -347,33 +374,19 @@ export default function Home() {
                     <span>{metadata.label}</span>
                     <ArrowUpRight size={15} aria-hidden="true" />
                   </div>
-                  <p>{count ? `${count} ${count === 1 ? "finding" : "findings"} need review` : "No urgent findings"}</p>
+                  <p><strong>{String(count).padStart(2, "0")}</strong><span>{count === 1 ? "open finding" : "open findings"}</span></p>
                 </div>
               </button>
             );
           })}
         </section>
 
-        <section className="coverage-strip" aria-label="Monitored sources">
-          <div className="coverage-label">
-            <span className="coverage-pulse" aria-hidden="true" />
-            <span>Coverage</span>
-          </div>
-          <div className="source-list">
-            {SOURCE_CATALOG.map((source) => (
-              <a key={source.name} href={source.url} target="_blank" rel="noopener noreferrer">
-                {source.name}
-                <ExternalLink size={12} aria-hidden="true" />
-              </a>
-            ))}
-          </div>
-        </section>
-
+        <div className="operations-grid">
         <section className="findings-section" aria-labelledby="findings-title">
           <div className="section-heading">
             <div>
-              <p className="section-kicker">Review queue</p>
-              <h2 id="findings-title">Needs attention</h2>
+              <p className="section-kicker">Triage workspace</p>
+              <h2 id="findings-title">Review queue <span className="queue-count">{visibleFindings.length}</span></h2>
             </div>
             {selectedPlatform !== "all" ? (
               <button className="clear-filter" type="button" onClick={() => setSelectedPlatform("all")}>
@@ -479,7 +492,7 @@ export default function Home() {
                         <div className="detail-actions">
                           <button type="button" className="review-button" onClick={() => markReviewed(finding.id)}>
                             <CheckCircle2 size={15} aria-hidden="true" />
-                            Mark as reviewed
+                            Reviewed this session
                           </button>
                           <span className="detail-disclaimer">Review the source before taking action.</span>
                         </div>
@@ -495,7 +508,7 @@ export default function Home() {
               <strong>{selectedPlatform === "all" ? "No active findings." : "No findings match this environment."}</strong>
               <p>
                 {selectedPlatform === "all"
-                  ? `Monitoring is on. The latest check completed ${formatCheckedAt(lastChecked).toLowerCase()}.`
+                  ? "All available findings have been reviewed, or this feed is empty. Run a new check for current results."
                   : "Try the full view to see findings from every monitored scope."}
               </p>
               {selectedPlatform !== "all" ? (
@@ -505,9 +518,17 @@ export default function Home() {
           )}
         </section>
 
+        <aside className="sources-panel" id="sources" aria-labelledby="sources-title">
+          <div className="sources-heading"><Radio size={17}/><h2 id="sources-title">Source catalog</h2><span>{SOURCE_CATALOG.length}</span></div>
+          <p className="sources-description">Authoritative advisories used by the research agent.</p>
+          <div className="source-cards">{SOURCE_CATALOG.map((source, index) => <a key={source.name} href={source.url} target="_blank" rel="noopener noreferrer"><span className="source-number">0{index + 1}</span><span>{source.name}</span><ExternalLink size={13}/></a>)}</div>
+          <div className="research-state"><div><Activity size={15}/><span>Research status</span><span className={`research-status ${isRefreshing ? 'research-running' : ''}`}>{isRefreshing ? 'Running' : mode === 'fallback' ? 'Needs attention' : dataIsDemo ? 'Demo' : 'Complete'}</span></div><p>{isRefreshing ? 'Collecting and assessing public advisories.' : 'A new check runs on page load or on request.'}</p><div className="research-progress" aria-hidden="true"><span className={isRefreshing ? 'progress-scanning' : ''}/></div><small>Schedule <strong>On demand</strong></small></div>
+        </aside>
+        </div>
+
         <footer className="page-footer">
           <span><TriangleAlert size={14} aria-hidden="true" /> Findings are signals for review, not proof of compromise.</span>
-          <span>Read-only monitoring surface</span>
+          <span>NIMBLE <span className="footer-slash">/</span> WATCHTOWER</span>
         </footer>
       </div>
     </main>
