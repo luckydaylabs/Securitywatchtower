@@ -1,5 +1,15 @@
 export type PlatformKey = "all" | "macos" | "windows" | "linux" | "ai";
 export type Severity = "critical" | "high" | "medium" | "low";
+export type CheckTrigger = "manual" | "automatic";
+
+export type SnapshotHistory = {
+  id: string;
+  checkedAt: string;
+  trigger: CheckTrigger;
+  findingCount: number;
+  criticalCount: number;
+  platformCount: number;
+};
 
 export type Finding = {
   id: string;

@@ -1,5 +1,8 @@
-import { type Finding } from "@/lib/watchtower";
+import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
+import { getDb } from "@/db";
+import { watchtowerSnapshots } from "@/db/schema";
+import { type CheckTrigger, type Finding, type SnapshotHistory } from "@/lib/watchtower";
 
 export const dynamic = "force-dynamic";
 
@@ -257,12 +260,115 @@ function unavailable(message: string, status = 503) {
     {
       checkedAt: new Date().toISOString(),
       findings: [],
+      history: [],
       message,
       mode: "fallback",
       status: "failed",
     },
     status,
   );
+}
+
+function normalizeCheckTrigger(value: unknown): CheckTrigger {
+  return value === "automatic" ? "automatic" : "manual";
+}
+
+function snapshotHistoryFromRow(row: Pick<SnapshotRow, "id" | "checkedAt" | "trigger" | "findingCount" | "criticalCount" | "platformCount">): SnapshotHistory {
+  return {
+    id: row.id,
+    checkedAt: row.checkedAt,
+    trigger: normalizeCheckTrigger(row.trigger),
+    findingCount: row.findingCount,
+    criticalCount: row.criticalCount,
+    platformCount: row.platformCount,
+  };
+}
+
+function storedSnapshotFromRow(row: SnapshotRow): StoredSnapshot {
+  let findings: Finding[] = [];
+  try {
+    findings = normalizeFindings(JSON.parse(row.findingsJson));
+  } catch {
+    throw new Error("Watchtower stored snapshot data is invalid.");
+  }
+
+  return {
+    ...snapshotHistoryFromRow(row),
+    findings,
+    message: row.message,
+  };
+}
+
+async function readSnapshotHistory() {
+  const db = getDb();
+  const rows = await db
+    .select({
+      id: watchtowerSnapshots.id,
+      checkedAt: watchtowerSnapshots.checkedAt,
+      trigger: watchtowerSnapshots.trigger,
+      findingCount: watchtowerSnapshots.findingCount,
+      criticalCount: watchtowerSnapshots.criticalCount,
+      platformCount: watchtowerSnapshots.platformCount,
+    })
+    .from(watchtowerSnapshots)
+    .orderBy(desc(watchtowerSnapshots.checkedAt), desc(watchtowerSnapshots.createdAt))
+    .limit(20);
+
+  return rows.map(snapshotHistoryFromRow);
+}
+
+async function readSnapshotById(id: string) {
+  const db = getDb();
+  const [row] = await db
+    .select()
+    .from(watchtowerSnapshots)
+    .where(eq(watchtowerSnapshots.id, id))
+    .limit(1);
+  return row ? storedSnapshotFromRow(row) : null;
+}
+
+async function readLatestSnapshot() {
+  const db = getDb();
+  const [row] = await db
+    .select()
+    .from(watchtowerSnapshots)
+    .orderBy(desc(watchtowerSnapshots.checkedAt), desc(watchtowerSnapshots.createdAt))
+    .limit(1);
+  return row ? storedSnapshotFromRow(row) : null;
+}
+
+async function persistSnapshot(
+  reference: NimbleRunReference,
+  findings: Finding[],
+  message: string,
+  trigger: CheckTrigger,
+) {
+  const db = getDb();
+  const checkedAt = new Date().toISOString();
+  const snapshotId = `watchtower:${reference.stage}:${reference.runId}`;
+
+  await db
+    .insert(watchtowerSnapshots)
+    .values({
+      id: snapshotId,
+      checkedAt,
+      trigger,
+      findingCount: findings.length,
+      criticalCount: findings.filter((finding) => finding.severity === "critical").length,
+      platformCount: new Set(findings.map((finding) => finding.platform)).size,
+      findingsJson: JSON.stringify(findings),
+      message,
+      createdAt: checkedAt,
+    })
+    .onConflictDoNothing();
+
+  const snapshot = await readSnapshotById(snapshotId);
+  if (!snapshot) throw new Error("Watchtower could not persist the completed snapshot.");
+
+  return {
+    ...snapshot,
+    history: await readSnapshotHistory(),
+  };
 }
 
 function isAllowedBrowserRefresh(request: Request) {
@@ -346,7 +452,16 @@ type NimbleRunReference = {
   runId: string;
 };
 
-type PipelineContext = Partial<Record<PipelineStage, NimbleRunReference>>;
+type PipelineContext = Partial<Record<PipelineStage, NimbleRunReference>> & {
+  trigger?: CheckTrigger;
+};
+
+type StoredSnapshot = SnapshotHistory & {
+  findings: Finding[];
+  message: string;
+};
+
+type SnapshotRow = typeof watchtowerSnapshots.$inferSelect;
 
 function getNimbleConfig(): NimbleConfig | null {
   const apiKey = process.env.NIMBLE_API_KEY?.trim();
@@ -853,6 +968,8 @@ function contextFromQuery(url: URL): PipelineContext {
     const runId = url.searchParams.get(`${stage}RunId`)?.trim();
     if (agentId && runId) context[stage] = { stage, agentId, runId };
   }
+  const trigger = url.searchParams.get("trigger");
+  if (trigger) context.trigger = normalizeCheckTrigger(trigger);
   return context;
 }
 
@@ -879,14 +996,27 @@ function completedResponse(
   findings: Finding[],
   message: string,
   trust?: NimbleTrust,
+  checkedAt = new Date().toISOString(),
+  history: SnapshotHistory[] = [],
 ) {
   return jsonResponse({
-    checkedAt: new Date().toISOString(),
+    checkedAt,
     findings,
+    history,
     ...(trust ? { trust } : {}),
     message,
     mode: "live",
     pipelineStages: PIPELINE_STAGES,
+    status: "completed",
+  });
+}
+
+function idleResponse(history: SnapshotHistory[]) {
+  return jsonResponse({
+    findings: [],
+    history,
+    message: history.length ? "Select a completed check to inspect its saved results." : "No completed security checks yet.",
+    mode: "idle",
     status: "completed",
   });
 }
@@ -909,7 +1039,13 @@ async function advancePipeline(
   if (current.stage === "monitor") {
     const findings = parseFindingStage(payload, "monitor");
     if (!findings.length) {
-      return completedResponse([], "Nimble completed the source check. No actionable findings passed the monitor stage.", trust);
+      const snapshot = await persistSnapshot(
+        current,
+        [],
+        "Nimble completed the source check. No actionable findings passed the monitor stage.",
+        context.trigger ?? "manual",
+      );
+      return completedResponse(snapshot.findings, snapshot.message, trust, snapshot.checkedAt, snapshot.history);
     }
 
     const next = await startNimbleStage("investigator", investigatorInput(selectPipelineCandidates(findings)));
@@ -968,7 +1104,13 @@ async function advancePipeline(
   const monitorIds = new Set(monitorFindings.map((finding) => finding.id));
   const findings = parseFindingStage(payload, "orchestrator")
     .filter((finding) => monitorIds.has(finding.id) && acceptedIds.has(finding.id));
-  return completedResponse(findings, "Nimble completed the monitor, investigation, verification, and orchestration pipeline.", trust);
+  const snapshot = await persistSnapshot(
+    current,
+    findings,
+    "Nimble completed the monitor, investigation, verification, and orchestration pipeline.",
+    context.trigger ?? "manual",
+  );
+  return completedResponse(snapshot.findings, snapshot.message, trust, snapshot.checkedAt, snapshot.history);
 }
 
 export async function POST(request: Request) {
@@ -982,10 +1124,12 @@ export async function POST(request: Request) {
   }
 
   try {
+    const requestUrl = new URL(request.url);
+    const trigger = normalizeCheckTrigger(requestUrl.searchParams.get("trigger"));
     const monitor = await startNimbleStage("monitor", monitorPrompt);
     return pendingResponse(
       monitor,
-      { monitor },
+      { monitor, trigger },
       "Nimble source monitoring started. The review pipeline may take several minutes.",
     );
   } catch (error) {
@@ -994,20 +1138,29 @@ export async function POST(request: Request) {
 }
 
 export async function GET(request: Request) {
-  const config = getNimbleConfig();
-  if (!config) {
-    return unavailable("Nimble monitoring is not configured for this Site. Add the runtime secret and retry.");
-  }
-
   if (!isAllowedBrowserRefresh(request)) {
     return unavailable("Refresh is available from a normal browser session.", 403);
   }
 
   try {
     const url = new URL(request.url);
+    const stageParam = url.searchParams.get("stage");
     const stage = stageFromQuery(url.searchParams.get("stage"));
     const agentId = url.searchParams.get("agentId")?.trim();
     const runId = url.searchParams.get("runId")?.trim();
+    const snapshotId = url.searchParams.get("snapshotId")?.trim();
+
+    if (!agentId && !runId && !stageParam) {
+      const history = await readSnapshotHistory();
+      const snapshot = snapshotId ? await readSnapshotById(snapshotId) : await readLatestSnapshot();
+      return snapshot ? completedResponse(snapshot.findings, snapshot.message, undefined, snapshot.checkedAt, history) : idleResponse(history);
+    }
+
+    const config = getNimbleConfig();
+    if (!config) {
+      return unavailable("Nimble monitoring is not configured for this Site. Add the runtime secret and retry.");
+    }
+
     if (!agentId || !runId) return unavailable("Nimble run reference is incomplete.", 400);
 
     const current: NimbleRunReference = { stage, agentId, runId };

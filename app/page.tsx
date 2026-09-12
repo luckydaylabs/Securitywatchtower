@@ -22,16 +22,17 @@ import {
 import {
   PLATFORM_META,
   SOURCE_CATALOG,
+  type CheckTrigger,
   type Finding,
   type PlatformKey,
   type Severity,
+  type SnapshotHistory,
 } from "@/lib/watchtower";
 import { VulnerabilityTicker } from "@/components/vulnerability-ticker";
 import { ThreatAnalytics } from "@/components/threat-analytics";
 
 type FeedMode = "idle" | "live" | "fallback" | "pending";
 type PipelineStage = "monitor" | "investigator" | "verifier" | "orchestrator";
-type CheckTrigger = "manual" | "automatic";
 
 type RunReference = {
   stage: PipelineStage;
@@ -39,12 +40,15 @@ type RunReference = {
   runId: string;
 };
 
-type PipelineContext = Partial<Record<PipelineStage, RunReference>>;
+type PipelineContext = Partial<Record<PipelineStage, RunReference>> & {
+  trigger?: CheckTrigger;
+};
 
 type FeedResponse = {
   agentId?: string;
   checkedAt?: string;
   findings?: Finding[];
+  history?: SnapshotHistory[];
   message?: string;
   mode?: FeedMode;
   stage?: PipelineStage;
@@ -68,6 +72,7 @@ function addPipelineContext(params: URLSearchParams, context: PipelineContext) {
     params.set(`${stage}AgentId`, reference.agentId);
     params.set(`${stage}RunId`, reference.runId);
   }
+  if (context.trigger) params.set("trigger", context.trigger);
 }
 
 const severityLabels: Record<Severity, string> = {
@@ -115,8 +120,21 @@ function findingTime(value: string) {
   return parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+function historyTime(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export default function Home() {
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [history, setHistory] = useState<SnapshotHistory[]>([]);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>();
   const [mode, setMode] = useState<FeedMode>("idle");
   const [lastChecked, setLastChecked] = useState<string>();
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
@@ -141,7 +159,7 @@ export default function Home() {
     setMode("pending");
 
     try {
-      const response = await fetch("/api/findings", {
+      const response = await fetch(`/api/findings?trigger=${encodeURIComponent(trigger)}`, {
         method: "POST",
         cache: "no-store",
       });
@@ -153,6 +171,8 @@ export default function Home() {
 
       if (payload.mode === "live") {
         if (Array.isArray(payload.findings)) setFindings(payload.findings);
+        if (Array.isArray(payload.history)) setHistory(payload.history);
+        if (payload.history?.[0]?.id) setSelectedSnapshotId(payload.history[0].id);
         setMode("live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setAnnouncement(payload.message ?? "Findings refreshed.");
@@ -182,6 +202,45 @@ export default function Home() {
       setIsRefreshing(false);
     }
   }, []);
+
+  const loadSavedSnapshot = useCallback(async (snapshotId?: string) => {
+    setError(undefined);
+
+    try {
+      const endpoint = snapshotId
+        ? `/api/findings?snapshotId=${encodeURIComponent(snapshotId)}`
+        : "/api/findings";
+      const response = await fetch(endpoint, { cache: "no-store" });
+      const payload = (await response.json()) as FeedResponse;
+
+      if (!response.ok) {
+        throw new Error(payload.message ?? "Saved check history could not be loaded.");
+      }
+
+      if (Array.isArray(payload.history)) setHistory(payload.history);
+      if (Array.isArray(payload.findings)) setFindings(payload.findings);
+      if (payload.mode === "live") {
+        setMode("live");
+        if (payload.checkedAt) setLastChecked(payload.checkedAt);
+        setSelectedSnapshotId(snapshotId ?? payload.history?.[0]?.id);
+      } else {
+        setMode(payload.mode ?? "idle");
+        setFindings([]);
+        setLastChecked(undefined);
+        setSelectedSnapshotId(undefined);
+      }
+    } catch (loadError) {
+      setMode("fallback");
+      setError(loadError instanceof Error ? loadError.message : "Saved check history could not be loaded.");
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadSavedSnapshot();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadSavedSnapshot]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -276,6 +335,8 @@ export default function Home() {
         }
 
         if (Array.isArray(payload.findings)) setFindings(payload.findings);
+        if (Array.isArray(payload.history)) setHistory(payload.history);
+        if (payload.history?.[0]?.id) setSelectedSnapshotId(payload.history[0].id);
         setMode(payload.mode ?? "live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setAnnouncement(payload.message ?? "Findings refreshed.");
@@ -500,6 +561,62 @@ export default function Home() {
               </button>
             );
           })}
+        </section>
+
+        <section className="history-panel" aria-labelledby="history-title">
+          <div className="section-heading history-heading">
+            <div>
+              <p className="section-kicker">Audit trail</p>
+              <h2 id="history-title">Check history <span className="queue-count">{history.length}</span></h2>
+            </div>
+            <span className="history-caption">Saved snapshots · newest first</span>
+          </div>
+
+          {history.length ? (
+            <div className="history-table-wrap">
+              <table className="history-table">
+                <caption className="sr-only">Saved security check snapshots</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Checked</th>
+                    <th scope="col">Run mode</th>
+                    <th scope="col">Announcements</th>
+                    <th scope="col">Critical</th>
+                    <th scope="col">Platforms</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((snapshot) => (
+                    <tr key={snapshot.id} className={selectedSnapshotId === snapshot.id ? "history-row-selected" : undefined}>
+                      <td>
+                        <button
+                          type="button"
+                          className="history-row-button"
+                          onClick={() => void loadSavedSnapshot(snapshot.id)}
+                          disabled={isRefreshing}
+                          aria-label={`Open saved check from ${historyTime(snapshot.checkedAt)}`}
+                        >
+                          {historyTime(snapshot.checkedAt)}
+                        </button>
+                      </td>
+                      <td><span className={`history-trigger history-trigger-${snapshot.trigger}`}>{snapshot.trigger === "automatic" ? "Hourly" : "Manual"}</span></td>
+                      <td>{String(snapshot.findingCount).padStart(2, "0")}</td>
+                      <td className={snapshot.criticalCount ? "history-critical" : undefined}>{String(snapshot.criticalCount).padStart(2, "0")}</td>
+                      <td>{String(snapshot.platformCount).padStart(2, "0")}/04</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="history-empty">
+              <Clock3 size={18} aria-hidden="true" />
+              <div>
+                <strong>No saved checks yet.</strong>
+                <p>Completed manual and hourly checks will remain available here after a refresh.</p>
+              </div>
+            </div>
+          )}
         </section>
 
         <div className="operations-grid">
