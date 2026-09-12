@@ -31,6 +31,7 @@ import { ThreatAnalytics } from "@/components/threat-analytics";
 
 type FeedMode = "idle" | "live" | "fallback" | "pending";
 type PipelineStage = "monitor" | "investigator" | "verifier" | "orchestrator";
+type CheckTrigger = "manual" | "automatic";
 
 type RunReference = {
   stage: PipelineStage;
@@ -56,6 +57,10 @@ type FeedResponse = {
 type ActiveRun = RunReference & { context: PipelineContext };
 
 const pipelineStages: PipelineStage[] = ["monitor", "investigator", "verifier", "orchestrator"];
+const HOURLY_MONITORING_STORAGE_KEY = "watchtower.hourly-monitoring";
+const LAST_AUTOMATIC_CHECK_STORAGE_KEY = "watchtower.last-automatic-check";
+const HOURLY_MONITORING_INTERVAL_MS = 60 * 60 * 1000;
+
 function addPipelineContext(params: URLSearchParams, context: PipelineContext) {
   for (const stage of pipelineStages) {
     const reference = context[stage];
@@ -115,6 +120,8 @@ export default function Home() {
   const [mode, setMode] = useState<FeedMode>("idle");
   const [lastChecked, setLastChecked] = useState<string>();
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
+  const [hourlyMonitoringEnabled, setHourlyMonitoringEnabled] = useState<boolean | null>(null);
+  const [checkTrigger, setCheckTrigger] = useState<CheckTrigger>("automatic");
   const [selectedPlatform, setSelectedPlatform] = useState<PlatformKey>("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [technicalId, setTechnicalId] = useState<string | null>(null);
@@ -122,12 +129,13 @@ export default function Home() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const isRefreshingRef = useRef(false);
   const [error, setError] = useState<string>();
-  const [announcement, setAnnouncement] = useState("Starting the monitoring pipeline.");
+  const [announcement, setAnnouncement] = useState("Preparing the monitoring check.");
 
-  const loadFindings = useCallback(async () => {
+  const loadFindings = useCallback(async (trigger: CheckTrigger = "manual") => {
     if (isRefreshingRef.current) return;
 
     isRefreshingRef.current = true;
+    setCheckTrigger(trigger);
     setIsRefreshing(true);
     setError(undefined);
     setMode("pending");
@@ -169,11 +177,58 @@ export default function Home() {
     } catch (loadError) {
       setMode("fallback");
       setError(loadError instanceof Error ? loadError.message : "The latest findings could not be loaded.");
-      setAnnouncement("The monitoring pipeline could not be completed. No new findings were loaded.");
+      setAnnouncement("The security check could not be completed. No new findings were loaded.");
       isRefreshingRef.current = false;
       setIsRefreshing(false);
     }
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const storedPreference = window.localStorage.getItem(HOURLY_MONITORING_STORAGE_KEY);
+        setHourlyMonitoringEnabled(storedPreference !== "false");
+      } catch {
+        setHourlyMonitoringEnabled(true);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (hourlyMonitoringEnabled !== true) return;
+
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const runOnSchedule = async () => {
+      if (cancelled) return;
+      try {
+        window.localStorage.setItem(LAST_AUTOMATIC_CHECK_STORAGE_KEY, String(Date.now()));
+      } catch {
+        // The timer still runs for this tab when browser storage is unavailable.
+      }
+      await loadFindings("automatic");
+      if (cancelled) return;
+      timer = window.setTimeout(() => void runOnSchedule(), HOURLY_MONITORING_INTERVAL_MS);
+    };
+
+    let delay = 0;
+    try {
+      const lastAutomaticCheck = Number(window.localStorage.getItem(LAST_AUTOMATIC_CHECK_STORAGE_KEY));
+      if (Number.isFinite(lastAutomaticCheck) && lastAutomaticCheck > 0) {
+        delay = Math.max(0, HOURLY_MONITORING_INTERVAL_MS - (Date.now() - lastAutomaticCheck));
+      }
+    } catch {
+      delay = 0;
+    }
+    timer = window.setTimeout(() => void runOnSchedule(), delay);
+
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [hourlyMonitoringEnabled, loadFindings]);
 
   useEffect(() => {
     if (!activeRun) return;
@@ -234,7 +289,7 @@ export default function Home() {
         setIsRefreshing(false);
         setMode("fallback");
         setError(pollError instanceof Error ? pollError.message : "The Nimble monitoring run could not be read.");
-        setAnnouncement("The monitoring pipeline could not be completed. No new findings were loaded.");
+        setAnnouncement("The security check could not be completed. No new findings were loaded.");
       }
     }
 
@@ -244,13 +299,6 @@ export default function Home() {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [activeRun]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void loadFindings();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [loadFindings]);
 
   const visibleFindings = useMemo(() => {
     const scoped = selectedPlatform === "all"
@@ -294,6 +342,36 @@ export default function Home() {
     }, 0);
   }
 
+  function toggleHourlyMonitoring() {
+    if (hourlyMonitoringEnabled === null) return;
+
+    const nextValue = !hourlyMonitoringEnabled;
+    setHourlyMonitoringEnabled(nextValue);
+    try {
+      window.localStorage.setItem(HOURLY_MONITORING_STORAGE_KEY, String(nextValue));
+    } catch {
+      // The setting still applies for this tab when browser storage is unavailable.
+    }
+    setAnnouncement(
+      nextValue
+        ? "Hourly monitoring is on. Checks run while this dashboard is open."
+        : "Hourly monitoring is off. Manual checks remain available.",
+    );
+  }
+
+  const progressValue = isRefreshing
+    ? activeRun
+      ? Math.min(92, 17 + pipelineStages.indexOf(activeRun.stage) * 25)
+      : 7
+    : 0;
+  const monitoringStatus = isRefreshing
+    ? `${checkTrigger === "manual" ? "Manual" : "Hourly"} check in progress`
+    : hourlyMonitoringEnabled === false
+      ? "Manual monitoring"
+      : hourlyMonitoringEnabled === true
+        ? "Hourly monitoring"
+        : "Loading monitoring settings";
+
   return (
     <main className="watchtower-shell">
       <aside className="command-rail" aria-label="Dashboard navigation">
@@ -319,20 +397,56 @@ export default function Home() {
 
           <div className="topbar-status" aria-label="Monitoring status">
             <span className="status-dot" aria-hidden="true" />
-            <span>{isRefreshing ? "Research in progress" : "On-demand monitoring"}</span>
+            <span>{monitoringStatus}</span>
             <span className="topbar-divider" aria-hidden="true" />
             <span>Last checked {formatCheckedAt(lastChecked)}</span>
           </div>
 
-          <button
-            className="refresh-button"
-            type="button"
-            onClick={() => void loadFindings()}
-            disabled={isRefreshing}
-          >
-            <RefreshCw size={16} className={isRefreshing ? "spin" : ""} aria-hidden="true" />
-            <span>{isRefreshing ? "Checking sources" : "Run new check"}</span>
-          </button>
+          <div className="monitoring-controls">
+            <div className="monitoring-toggle">
+              <span className="monitoring-toggle-copy">
+                <span className="monitoring-toggle-label">Hourly checks</span>
+                <span className="monitoring-toggle-state">{hourlyMonitoringEnabled === null ? "Loading" : hourlyMonitoringEnabled ? "On · while open" : "Off · manual"}</span>
+              </span>
+              <button
+                className={`monitoring-switch ${hourlyMonitoringEnabled ? "monitoring-switch-on" : ""}`}
+                type="button"
+                role="switch"
+                aria-checked={hourlyMonitoringEnabled === true}
+                aria-label="Toggle hourly monitoring"
+                disabled={hourlyMonitoringEnabled === null}
+                onClick={toggleHourlyMonitoring}
+              >
+                <span aria-hidden="true" />
+              </button>
+            </div>
+
+            <button
+              className={`refresh-button ${isRefreshing ? "refresh-button-checking" : ""}`}
+              type="button"
+              onClick={() => void loadFindings("manual")}
+              disabled={isRefreshing}
+              aria-label={isRefreshing ? `${checkTrigger === "manual" ? "Manual" : "Hourly"} check in progress` : "Run a manual security check"}
+            >
+              <span className="refresh-button-copy">
+                <RefreshCw size={16} className={isRefreshing ? "spin" : ""} aria-hidden="true" />
+                <span>{isRefreshing ? `${checkTrigger === "manual" ? "Manual" : "Hourly"} check` : hourlyMonitoringEnabled === false ? "Run manual check" : "Run check"}</span>
+              </span>
+              {isRefreshing ? (
+                <span
+                  className="refresh-progress"
+                  role="progressbar"
+                  aria-label="Security check progress"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={progressValue}
+                  aria-valuetext={`${progressValue}% estimated progress`}
+                >
+                  <span className="refresh-progress-fill" style={{ width: `${progressValue}%` }} />
+                </span>
+              ) : null}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -350,7 +464,7 @@ export default function Home() {
           <div className="metric-card"><div className="metric-heading"><span>Reviewed</span><CheckCircle2 size={17}/></div><div className="metric-value-row"><strong>{String(reviewedCount).padStart(2, "0")}</strong><span className="review-fraction">of {findings.length}</span></div><div className="metric-caption">This session{reviewedCount > 0 ? <button type="button" onClick={() => { setReviewedIds(new Set()); setAnnouncement("Reviewed findings restored to the queue."); }}>Reset reviews</button> : <span>Ready for triage</span>}</div></div>
         </section>
 
-        <div className="analytics-context"><span>01 <span className="context-rule"/> Intelligence overview</span><span>{selectedPlatform === "all" ? "All platforms" : PLATFORM_META[selectedPlatform].label} · {mode === "live" ? "Latest results" : mode === "pending" ? "Awaiting pipeline" : "No completed data"}</span></div>
+        <div className="analytics-context"><span>01 <span className="context-rule"/> Intelligence overview</span><span>{selectedPlatform === "all" ? "All platforms" : PLATFORM_META[selectedPlatform].label} · {mode === "live" ? "Latest results" : mode === "pending" ? "Awaiting results" : "No completed data"}</span></div>
         <ThreatAnalytics findings={scopeFindings} checkedAt={lastChecked}/>
 
         <div className="queue-context"><span>02 <span className="context-rule"/> Platform scope</span><button type="button" onClick={() => setSelectedPlatform("all")} aria-pressed={selectedPlatform === "all"}>All platforms <ArrowUpRight size={13}/></button></div>
@@ -409,7 +523,7 @@ export default function Home() {
                 <strong>We couldn’t load the latest findings.</strong>
                 <p>{error}</p>
               </div>
-              <button type="button" onClick={() => void loadFindings()}>Try again</button>
+              <button type="button" onClick={() => void loadFindings("manual")}>Try again</button>
             </div>
           ) : null}
 
@@ -516,12 +630,12 @@ export default function Home() {
               <p>
                 {selectedPlatform === "all"
                   ? mode === "pending"
-                    ? "The review pipeline is still running. Results will appear when all stages complete."
+                    ? "The security check is still running. Results will appear when it completes."
                     : mode === "fallback"
                       ? "No current results are available. Resolve the monitoring configuration and run the check again."
                       : reviewedCount > 0
-                        ? "All findings in the current snapshot have been reviewed. Run a new check for current results."
-                        : "Run a new check to collect current results from the configured public sources."
+                        ? "All findings in the current snapshot have been reviewed. Run a manual check for current results."
+                        : "Run a manual check to collect current results from the configured public sources."
                   : "Try the full view to see findings from every monitored scope."}
               </p>
               {selectedPlatform !== "all" ? (
@@ -535,7 +649,7 @@ export default function Home() {
           <div className="sources-heading"><Radio size={17}/><h2 id="sources-title">Source catalog</h2><span>{SOURCE_CATALOG.length}</span></div>
           <p className="sources-description">Authoritative advisories used by the research agent.</p>
           <div className="source-cards">{SOURCE_CATALOG.map((source, index) => <a key={source.name} href={source.url} target="_blank" rel="noopener noreferrer"><span className="source-number">0{index + 1}</span><span>{source.name}</span><ExternalLink size={13}/></a>)}</div>
-          <div className="research-state"><div><Activity size={15}/><span>Research status</span><span className={`research-status ${isRefreshing ? 'research-running' : ''}`}>{isRefreshing ? 'Running' : mode === 'fallback' ? 'Unavailable' : mode === 'pending' ? 'Queued' : mode === 'live' ? 'Complete' : 'Standby'}</span></div><p>{isRefreshing ? 'Monitor, investigator, verifier, and orchestrator are processing public advisories.' : mode === 'fallback' ? 'Nimble is unavailable. Check the runtime configuration and retry.' : mode === 'live' ? 'The latest completed pipeline supplied this snapshot.' : 'Run a check to collect current public advisories.'}</p><div className="research-progress" aria-hidden="true"><span className={isRefreshing ? 'progress-scanning' : ''}/></div><small>Run mode <strong>On demand</strong></small></div>
+          <div className="research-state"><div><Activity size={15}/><span>Research status</span><span className={`research-status ${isRefreshing ? 'research-running' : ''}`}>{isRefreshing ? 'Running' : mode === 'fallback' ? 'Unavailable' : mode === 'pending' ? 'Queued' : mode === 'live' ? 'Complete' : 'Standby'}</span></div><p>{isRefreshing ? 'Nimble is checking public advisories.' : mode === 'fallback' ? 'Nimble is unavailable. Check the runtime configuration and retry.' : mode === 'live' ? 'The latest completed check supplied this snapshot.' : 'Run a check to collect current public advisories.'}</p><div className="research-progress" aria-hidden="true"><span className={isRefreshing ? 'progress-scanning' : ''}/></div><small>Run mode <strong>{hourlyMonitoringEnabled === true ? 'Hourly' : 'Manual'}</strong></small></div>
         </aside>
         </div>
 
