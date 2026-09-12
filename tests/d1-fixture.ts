@@ -2,6 +2,8 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 const sqlite = new DatabaseSync(":memory:");
+let batchHook: ((sql: string) => Promise<void>) | undefined;
+export function setBatchHook(hook?: (sql: string) => Promise<void>) { batchHook = hook; }
 for (const file of readdirSync("drizzle").filter(f => f.endsWith(".sql")).sort()) sqlite.exec(readFileSync(join("drizzle", file), "utf8"));
 class Statement {
   values: any[] = [];
@@ -15,7 +17,7 @@ export function getDatabase(): any { return {
   prepare: (sql: string) => new Statement(sql),
   batch: async (statements: Statement[]) => {
     sqlite.exec("BEGIN");
-    try { const result = []; for (const statement of statements) result.push(await statement.run()); sqlite.exec("COMMIT"); return result; }
+    try { const result = []; for (const statement of statements) { result.push(await statement.run()); await batchHook?.(statement.sql); } sqlite.exec("COMMIT"); return result; }
     catch (error) { sqlite.exec("ROLLBACK"); throw error; }
   },
 }; }

@@ -14,6 +14,10 @@ type SnapshotRow = { id: string; checked_at: string; trigger: CheckTrigger; find
   platform_count: number; findings_json: string; trust_json: string | null; message: string };
 const now = () => new Date().toISOString();
 class LeaseLost extends Error {}
+function assertLease(owner: string): D1PreparedStatement {
+  // SQLite integer overflow aborts the entire D1 batch if ownership expires mid-transition.
+  return getDatabase().prepare("SELECT CASE WHEN EXISTS(SELECT 1 FROM watchtower_control WHERE id='main' AND lease_owner=? AND lease_until>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)) THEN 1 ELSE abs(-9223372036854775808) END AS lease_valid").bind(owner);
+}
 function write(owner: string | undefined, sql: string): D1PreparedStatement {
   if (!owner || !/^[a-f0-9-]{36}$/.test(owner)) throw new LeaseLost("The check is being continued by another request.");
   // All writes below use simple VALUES lists or UPDATE ... WHERE statements. The ownership test
@@ -66,6 +70,7 @@ export async function startScan(trigger: CheckTrigger) {
       write(owner, "INSERT INTO watchtower_scans(id,status,stage,started_at,updated_at,state_json) VALUES(?,?,?,?,?,?)")
         .bind(scan.id, scan.status, scan.stage, timestamp, timestamp, scan.state_json),
       write(owner, "UPDATE watchtower_control SET active_scan=? WHERE id='main'").bind(scan.id),
+      assertLease(owner),
     ]);
     return scanResponse(scan);
   } finally { await release(owner); }
@@ -121,8 +126,8 @@ async function publish(scan: ScanRow, state: ScanState, verified: Finding[]) {
   const db = getDatabase();
   const accepted = new Map(verified.map(f => [f.id, f]));
   if (verified.some(f => !state.investigated?.some(i => i.id === f.id))) throw new Error("Verifier added an announcement that was not investigated.");
-  if (state.candidates.length) await db.batch(state.candidates.map(item => write(scan.lease, "UPDATE watchtower_announcements SET review_status=?,finding_json=?,scan_id=? WHERE version_id=?")
-    .bind(accepted.has(item.id) ? "accepted" : "rejected", accepted.has(item.id) ? JSON.stringify(accepted.get(item.id)) : null, scan.id, item.versionId)));
+  if (state.candidates.length) await db.batch([...state.candidates.map(item => write(scan.lease, "UPDATE watchtower_announcements SET review_status=?,finding_json=?,scan_id=? WHERE version_id=?")
+    .bind(accepted.has(item.id) ? "accepted" : "rejected", accepted.has(item.id) ? JSON.stringify(accepted.get(item.id)) : null, scan.id, item.versionId)), assertLease(scan.lease!)]);
   const findings = await currentFindings();
   const incomplete = state.sources.filter(s => s.status !== "checked").length;
   const message = `${verified.length} announcements verified in this check. ${findings.length} retained in history.${incomplete ? ` ${incomplete} sources have incomplete coverage; see Sources.` : ""}`;
@@ -133,6 +138,7 @@ async function publish(scan: ScanRow, state: ScanState, verified: Finding[]) {
         new Set(findings.map(f => f.platform)).size, JSON.stringify(findings), state.trust ? JSON.stringify(state.trust) : null, message, timestamp),
     write(scan.lease, "UPDATE watchtower_scans SET status='completed',stage='orchestrator',state_json=?,updated_at=?,error=NULL WHERE id=?").bind(JSON.stringify(state), timestamp, scan.id),
     write(scan.lease, "UPDATE watchtower_control SET active_scan=NULL WHERE id='main' AND active_scan=?").bind(scan.id),
+    assertLease(scan.lease!),
   ]);
   if (!result[1].meta.changes) throw new LeaseLost("Another request is continuing this check.");
   scan.status = "completed";

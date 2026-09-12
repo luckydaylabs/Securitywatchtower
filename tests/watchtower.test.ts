@@ -4,7 +4,7 @@ import { MONITOR_SOURCES } from "../lib/source-config";
 import { parseSource, parseMicrosoftDocument, collectSource, type Announcement } from "../lib/source-monitor";
 import { researchInput, validateResearch, readResearch } from "../lib/nimble-research";
 import { startScan, advanceScan, dashboardFeed } from "../lib/watchtower-pipeline";
-import { getDatabase, resetDatabase } from "./d1-fixture";
+import { getDatabase, resetDatabase, setBatchHook } from "./d1-fixture";
 
 const since = "2026-09-09T00:00:00.000Z", until = "2026-09-12T23:59:59.000Z";
 const source = (id: string) => MONITOR_SOURCES.find(s => s.id === id)!;
@@ -73,4 +73,27 @@ test("Durable scan resumes, publishes idempotently, and no-change checks retain 
   assert.equal(completed.findings.length, 1);
   assert.equal(completed.history.length, 2);
   assert.equal((await dashboardFeed()).findings.length, 1);
+});
+test("Expiry during scan creation rolls back the whole transition", async () => {
+  resetDatabase();
+  const db = getDatabase();
+  setBatchHook(async sql => { if (sql.startsWith("INSERT INTO watchtower_scans")) await db.prepare("UPDATE watchtower_control SET lease_until=0 WHERE id='main'").run(); });
+  try {
+    await assert.rejects(() => startScan("manual"), /overflow/);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM watchtower_scans").first()).n, 0);
+    assert.equal((await db.prepare("SELECT active_scan FROM watchtower_control").first()).active_scan, null);
+  } finally { setBatchHook(); }
+});
+test("Expiry during publication cannot leave a completed active scan", async () => {
+  resetDatabase();
+  const db = getDatabase();
+  const scan: any = await startScan("manual");
+  await db.prepare("UPDATE watchtower_scans SET stage='orchestrator' WHERE id=?").bind(scan.runId).run();
+  setBatchHook(async sql => { if (sql.startsWith("UPDATE watchtower_scans SET status='completed'")) await db.prepare("UPDATE watchtower_control SET lease_until=0 WHERE id='main'").run(); });
+  try {
+    const result = await advanceScan(scan.runId);
+    assert.equal(result.status, "failed");
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM watchtower_snapshots").first()).n, 0);
+    assert.equal((await db.prepare("SELECT status FROM watchtower_scans WHERE id=?").bind(scan.runId).first()).status, "blocked");
+  } finally { setBatchHook(); }
 });
