@@ -559,11 +559,14 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="topbar-status" aria-label="Monitoring status">
+          <div className={`topbar-status-group${mode === "partial" ? " has-notice" : ""}`} aria-label="Monitoring status">
+          <div className="topbar-status">
             <span className="status-dot" aria-hidden="true" />
             <span>{monitoringStatus}</span>
             <span className="topbar-divider" aria-hidden="true" />
             <span>Last checked {formatCheckedAt(lastChecked)}</span>
+          </div>
+          {mode === "partial" && <p className="topbar-status-note" role="status">Verified announcements saved. Some platforms could not finish; see Sources for details. Another check may use additional agent runs.</p>}
           </div>
 
           <div className="monitoring-controls">
@@ -621,7 +624,6 @@ export default function Home() {
           onSelectFinding={focusFinding}
         />
 
-        {mode === "partial" && <div className="partial-check-notice" role="status"><strong>Check partially completed</strong><p>Verified announcements are saved. Some platforms could not finish; see their errors under Sources. A new manual check may use additional agent runs.</p></div>}
         {mode === "fallback" && <div className="partial-check-notice" role="alert"><strong>Check needs attention</strong><p>{error ?? "The check could not finish. Saved findings remain available."}</p></div>}
         <section className="metrics-grid" aria-label="Current feed overview">
           <div className="metric-card"><div className="metric-heading"><span>Open findings</span><ShieldCheck size={17}/></div><div className="metric-value-row"><strong>{String(openCount).padStart(2, "0")}</strong><div className="metric-mini-bars" aria-hidden="true">{platformOrder.map(platform => <i key={platform} style={{ height: `${5 + countFor(platform) / Math.max(1, openCount) * 38}px` }}/>)}</div></div><div className="metric-caption">Across all platforms<span>{findings.length} in current feed</span></div></div>
