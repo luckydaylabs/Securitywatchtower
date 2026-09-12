@@ -59,7 +59,12 @@ export async function startScan(trigger: CheckTrigger) {
     if (existing) {
       existing.lease = owner;
       // Resume durable work; do not create another paid research run.
-      if (existing.status === "blocked") await save(existing, JSON.parse(existing.state_json));
+      if (existing.status === "blocked") {
+        const state: ScanState = JSON.parse(existing.state_json);
+        // Older edge builds rejected redirect:"error" before dispatch; this specific failure cannot have created a provider run.
+        if (!state.run && existing.error?.startsWith("Invalid redirect value, must be one of")) delete state.submission;
+        await save(existing, state);
+      }
       return scanResponse(existing);
     }
     const timestamp = now();

@@ -33,7 +33,7 @@ async function request(path: string, body?: object) {
   const { key, base } = config();
   return fetch(`${base}${path}`, { method: body ? "POST" : "GET", headers: {
     Authorization: `Bearer ${key}`, "Content-Type": "application/json",
-  }, ...(body ? { body: JSON.stringify(body) } : {}), redirect: "error", cache: "no-store", signal: AbortSignal.timeout(20000) });
+  }, ...(body ? { body: JSON.stringify(body) } : {}), redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(20000) });
 }
 async function errorResponse(response: Response): Promise<Error> {
   // Provider bodies can contain echoed input or credentials; expose only the status.
