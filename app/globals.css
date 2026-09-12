@@ -544,6 +544,10 @@ html { scroll-behavior: smooth; scroll-padding-top: 24px; }
 @media (max-width: 640px) { .timeline-graphic { overflow: visible; }.timeline-graphic svg { min-width: 0; }.metric-heading { font-size: 12px; }.metric-caption { font-size: 11px; }.platform-card-heading { font-size: 12px; }.platform-card p { font-size: 10px; }.analytics-context, .queue-context { font-size: 10px; }.chart-readout { font-size: 10px; }.panel-heading { flex-wrap: wrap; gap: 10px; }.panel-eyebrow { font-size: 11px; }.range-control button { font-size: 10px; }.severity-legend button { font-size: 12px; }.legend-percent { font-size: 10px; }.chart-footnote, .severity-caption, .chart-data summary { font-size: 11px; }.finding-title { font-size: 14px; }.finding-summary { font-size: 12px; }.finding-meta { font-size: 11px; }.metric-critical .metric-caption { flex-wrap: nowrap; }.metric-critical .metric-caption .critical-tag { margin-left: auto; }.page-footer { font-size: 10px; } }
 
 .history-panel { margin: 0 0 24px; padding: 20px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
+.operations-grid + .history-panel { margin-top: 24px; }
+.finding-systems { display: grid; gap: 4px; margin: 3px 0; padding: 10px 12px; border-left: 3px solid #727d63; border-radius: 4px; background: #f0f1e9; color: var(--ink); }
+.finding-systems-label { font-size: 12px; font-weight: 700; line-height: 1.4; }
+.finding-systems-value { font-size: 14px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
 .history-heading { align-items: center; margin-bottom: 14px; }
 .history-caption { color: #89917f; font-family: var(--font-mono); font-size: 10px; }
 .history-table-wrap { overflow-x: auto; }

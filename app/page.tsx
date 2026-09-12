@@ -534,7 +534,7 @@ export default function Home() {
         <a className="rail-brand" href="#overview" aria-label="Watchtower overview"><Radar size={28} /></a>
         <nav>
           <a href="#overview" aria-label="Overview" title="Overview"><LayoutDashboard size={21} /></a>
-          <a href="#findings-title" aria-label="Review queue" title="Review queue"><ShieldCheck size={21} /></a>
+          <a href="#findings-title" aria-label="Security Announcements" title="Security Announcements"><ShieldCheck size={21} /></a>
           <a href="#sources" aria-label="Sources" title="Sources"><Radio size={21} /></a>
         </nav>
         <span className="rail-monogram" title="Nimble">N</span>
@@ -623,7 +623,7 @@ export default function Home() {
         <div className="analytics-context"><span>Security Announcements History</span><span>{selectedPlatform === "all" ? "All platforms" : PLATFORM_META[selectedPlatform].label} · {mode === "live" ? "Latest results" : mode === "pending" ? "Awaiting results" : "No completed data"}</span></div>
         <ThreatAnalytics findings={scopeFindings} checkedAt={lastChecked}/>
 
-        <div className="queue-context"><span>02 <span className="context-rule"/> Platform scope</span><button type="button" onClick={() => setSelectedPlatform("all")} aria-pressed={selectedPlatform === "all"}>All platforms <ArrowUpRight size={13}/></button></div>
+        <div className="queue-context"><span>Platforms Monitored</span><button type="button" onClick={() => setSelectedPlatform("all")} aria-pressed={selectedPlatform === "all"}>All platforms <ArrowUpRight size={13}/></button></div>
 
         <section className="platform-grid" aria-label="Monitoring scopes">
           {platformOrder.map((platform) => {
@@ -658,85 +658,11 @@ export default function Home() {
           })}
         </section>
 
-        <section className="history-panel" aria-labelledby="history-title">
-          <div className="section-heading history-heading">
-            <div>
-              <p className="section-kicker">Audit trail</p>
-              <h2 id="history-title">Check history <span className="queue-count">{history.length}</span></h2>
-            </div>
-            {selectedSnapshotId && history[0]?.id !== selectedSnapshotId ? (
-              <button type="button" className="history-latest-button" onClick={() => void loadSavedSnapshot()} disabled={isRefreshing}>
-                Return to latest
-              </button>
-            ) : (
-              <span className="history-caption">Saved snapshots · newest first</span>
-            )}
-          </div>
-
-          {historyStatus === "loading" ? (
-            <div className="history-empty" role="status">
-              <Clock3 size={18} aria-hidden="true" />
-              <div><strong>Loading saved checks…</strong><p>Retrieving the shared audit trail.</p></div>
-            </div>
-          ) : historyStatus === "error" ? (
-            <div className="history-error" role="alert">
-              <CircleAlert size={18} aria-hidden="true" />
-              <div><strong>History unavailable.</strong><p>{historyError ?? "Saved checks could not be loaded."}</p></div>
-              <button type="button" onClick={() => void loadSavedSnapshot()}>Retry</button>
-            </div>
-          ) : history.length ? (
-            <div className="history-table-wrap">
-              <table className="history-table">
-                <caption className="sr-only">Saved security check snapshots</caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Checked</th>
-                    <th scope="col">Run mode</th>
-                    <th scope="col">Findings</th>
-                    <th scope="col">Critical</th>
-                    <th scope="col">Platforms</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.map((snapshot) => (
-                    <tr key={snapshot.id} className={selectedSnapshotId === snapshot.id ? "history-row-selected" : undefined}>
-                      <td>
-                        <button
-                          type="button"
-                          className="history-row-button"
-                          onClick={() => void loadSavedSnapshot(snapshot.id)}
-                          disabled={isRefreshing}
-                          aria-label={`Open saved check from ${historyTime(snapshot.checkedAt)}`}
-                        >
-                          <time dateTime={snapshot.checkedAt}>{historyTime(snapshot.checkedAt)}</time>
-                        </button>
-                      </td>
-                      <td><span className={`history-trigger history-trigger-${snapshot.trigger}`}>{snapshot.trigger === "automatic" ? "Hourly" : "Manual"}</span></td>
-                      <td>{String(snapshot.findingCount).padStart(2, "0")}</td>
-                      <td className={snapshot.criticalCount ? "history-critical" : undefined}>{String(snapshot.criticalCount).padStart(2, "0")}</td>
-                      <td>{String(snapshot.platformCount).padStart(2, "0")}/04</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="history-empty">
-              <Clock3 size={18} aria-hidden="true" />
-              <div>
-                <strong>No saved checks yet.</strong>
-                <p>Completed manual and hourly checks will remain available here after a refresh.</p>
-              </div>
-            </div>
-          )}
-        </section>
-
         <div className="operations-grid">
         <section className="findings-section" aria-labelledby="findings-title">
           <div className="section-heading">
             <div>
-              <p className="section-kicker">Triage workspace</p>
-              <h2 id="findings-title">Review queue <span className="queue-count">{visibleFindings.length}</span></h2>
+              <h2 id="findings-title">Security Announcements <span className="queue-count">{visibleFindings.length}</span></h2>
             </div>
             {selectedPlatform !== "all" ? (
               <button className="clear-filter" type="button" onClick={() => setSelectedPlatform("all")}>
@@ -785,6 +711,10 @@ export default function Home() {
                           <span>{findingTime(finding.detectedAt)}</span>
                         </span>
                         <span className="finding-title">{finding.title}</span>
+                        <span className="finding-systems">
+                          <span className="finding-systems-label">Affected Systems</span>
+                          <span className="finding-systems-value">{finding.scope?.trim() || "Not specified in the source"}</span>
+                        </span>
                         <span className="finding-summary">{finding.summary}</span>
                       </span>
                       <ChevronDown className={`chevron ${expanded ? "chevron-open" : ""}`} size={19} aria-hidden="true" />
@@ -920,6 +850,79 @@ export default function Home() {
           <div className="research-state"><div><Activity size={15}/><span>Research status</span><span className={`research-status ${isRefreshing ? 'research-running' : ''}`}>{isRefreshing ? 'Running' : mode === 'fallback' ? 'Unavailable' : mode === 'pending' ? 'Queued' : mode === 'live' ? 'Complete' : 'Standby'}</span></div><p>{isRefreshing ? 'Nimble is checking public advisories.' : mode === 'fallback' ? 'Nimble is unavailable. Check the runtime configuration and retry.' : mode === 'live' ? 'The latest completed check supplied this snapshot.' : 'Run a check to collect current public advisories.'}</p><div className="research-progress" aria-hidden="true"><span className={isRefreshing ? 'progress-scanning' : ''}/></div><small>Run mode <strong>{hourlyMonitoringEnabled === true ? 'Hourly' : 'Manual'}</strong></small></div>
         </aside>
         </div>
+
+        <section className="history-panel" aria-labelledby="history-title">
+          <div className="section-heading history-heading">
+            <div>
+              <p className="section-kicker">Audit trail</p>
+              <h2 id="history-title">Check history <span className="queue-count">{history.length}</span></h2>
+            </div>
+            {selectedSnapshotId && history[0]?.id !== selectedSnapshotId ? (
+              <button type="button" className="history-latest-button" onClick={() => void loadSavedSnapshot()} disabled={isRefreshing}>
+                Return to latest
+              </button>
+            ) : (
+              <span className="history-caption">Saved snapshots · newest first</span>
+            )}
+          </div>
+
+          {historyStatus === "loading" ? (
+            <div className="history-empty" role="status">
+              <Clock3 size={18} aria-hidden="true" />
+              <div><strong>Loading saved checks…</strong><p>Retrieving the shared audit trail.</p></div>
+            </div>
+          ) : historyStatus === "error" ? (
+            <div className="history-error" role="alert">
+              <CircleAlert size={18} aria-hidden="true" />
+              <div><strong>History unavailable.</strong><p>{historyError ?? "Saved checks could not be loaded."}</p></div>
+              <button type="button" onClick={() => void loadSavedSnapshot()}>Retry</button>
+            </div>
+          ) : history.length ? (
+            <div className="history-table-wrap">
+              <table className="history-table">
+                <caption className="sr-only">Saved security check snapshots</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Checked</th>
+                    <th scope="col">Run mode</th>
+                    <th scope="col">Findings</th>
+                    <th scope="col">Critical</th>
+                    <th scope="col">Platforms</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((snapshot) => (
+                    <tr key={snapshot.id} className={selectedSnapshotId === snapshot.id ? "history-row-selected" : undefined}>
+                      <td>
+                        <button
+                          type="button"
+                          className="history-row-button"
+                          onClick={() => void loadSavedSnapshot(snapshot.id)}
+                          disabled={isRefreshing}
+                          aria-label={`Open saved check from ${historyTime(snapshot.checkedAt)}`}
+                        >
+                          <time dateTime={snapshot.checkedAt}>{historyTime(snapshot.checkedAt)}</time>
+                        </button>
+                      </td>
+                      <td><span className={`history-trigger history-trigger-${snapshot.trigger}`}>{snapshot.trigger === "automatic" ? "Hourly" : "Manual"}</span></td>
+                      <td>{String(snapshot.findingCount).padStart(2, "0")}</td>
+                      <td className={snapshot.criticalCount ? "history-critical" : undefined}>{String(snapshot.criticalCount).padStart(2, "0")}</td>
+                      <td>{String(snapshot.platformCount).padStart(2, "0")}/04</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="history-empty">
+              <Clock3 size={18} aria-hidden="true" />
+              <div>
+                <strong>No saved checks yet.</strong>
+                <p>Completed manual and hourly checks will remain available here after a refresh.</p>
+              </div>
+            </div>
+          )}
+        </section>
 
         <footer className="page-footer">
           <span><TriangleAlert size={14} aria-hidden="true" /> Findings are signals for review, not proof of compromise.</span>
