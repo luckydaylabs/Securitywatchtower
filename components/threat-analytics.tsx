@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ArrowUpRight, ChartNoAxesCombined, ChevronDown, Layers3 } from "lucide-react";
+import { ArrowUpRight, ChevronDown } from "lucide-react";
 import { type Finding, type Severity } from "@/lib/watchtower";
 
 const DAY = 86_400_000;
@@ -87,7 +87,7 @@ function Timeline({ findings, checkedAt }: { findings: Finding[]; checkedAt?: st
   return (
     <section className="analytics-panel activity-panel" aria-labelledby={`${chartId}-title`}>
       <div className="panel-heading">
-        <div><p className="panel-eyebrow"><ChartNoAxesCombined size={14} /> Threat telemetry</p><h2 id={`${chartId}-title`}>Detection timeline</h2></div>
+        <div><h2 id={`${chartId}-title`}>Detection timeline</h2></div>
         <div className="range-control" role="group" aria-label="Timeline date range">
           {([['7', '7D'], ['30', '30D'], ['90', '90D'], ['feed', 'All']] as const).map(([value, label]) => (
             <button type="button" key={value} aria-pressed={range === value} onClick={() => { setRange(value); setActive(null); }}>{label}</button>
@@ -156,7 +156,7 @@ function SeverityChart({ findings }: { findings: Finding[] }) {
     return [...segments, { severity, start: cursor + .012, end: end - .012 }];
   }, []);
   return <section className="analytics-panel severity-panel" aria-labelledby={`${chartId}-title`}>
-    <div className="panel-heading"><div><p className="panel-eyebrow"><Layers3 size={14}/> Risk distribution</p><h2 id={`${chartId}-title`}>Severity breakdown</h2></div><span className="panel-index">02</span></div>
+    <div className="panel-heading"><div><h2 id={`${chartId}-title`}>Severity breakdown</h2></div><span className="panel-index">02</span></div>
     <div className="severity-graphic">
       <svg viewBox="0 0 360 241" role="img" aria-label={severityOrder.map(s => `${counts[s]} ${names[s]}`).join(', ')}>
         <defs><filter id={`${chartId}-shadow`} x="-50%" y="-100%" width="200%" height="300%"><feGaussianBlur stdDeviation="10"/></filter></defs>

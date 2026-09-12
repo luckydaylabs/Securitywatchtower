@@ -40,8 +40,22 @@ type RunReference = {
   runId: string;
 };
 
+type PipelineBaseline = {
+  since: string;
+  findings: Array<{
+    id: string;
+    platform: Exclude<PlatformKey, "all">;
+    severity: Severity;
+    title: string;
+    summary: string;
+    sourceUrl: string;
+    detectedAt: string;
+  }>;
+};
+
 type PipelineContext = Partial<Record<PipelineStage, RunReference>> & {
   trigger?: CheckTrigger;
+  baseline?: PipelineBaseline;
 };
 
 type FeedResponse = {
@@ -75,6 +89,7 @@ function addPipelineContext(params: URLSearchParams, context: PipelineContext) {
     params.set(`${stage}RunId`, reference.runId);
   }
   if (context.trigger) params.set("trigger", context.trigger);
+  if (context.baseline) params.set("baseline", JSON.stringify(context.baseline));
 }
 
 const severityLabels: Record<Severity, string> = {
@@ -547,7 +562,7 @@ export default function Home() {
           <div className="metric-card"><div className="metric-heading"><span>Reviewed</span><CheckCircle2 size={17}/></div><div className="metric-value-row"><strong>{String(reviewedCount).padStart(2, "0")}</strong><span className="review-fraction">of {findings.length}</span></div><div className="metric-caption">This session{reviewedCount > 0 ? <button type="button" onClick={() => { setReviewedIds(new Set()); setAnnouncement("Reviewed findings restored to the queue."); }}>Reset reviews</button> : <span>Ready for triage</span>}</div></div>
         </section>
 
-        <div className="analytics-context"><span>01 <span className="context-rule"/> Intelligence overview</span><span>{selectedPlatform === "all" ? "All platforms" : PLATFORM_META[selectedPlatform].label} · {mode === "live" ? "Latest results" : mode === "pending" ? "Awaiting results" : "No completed data"}</span></div>
+        <div className="analytics-context"><span>Security Announcements History</span><span>{selectedPlatform === "all" ? "All platforms" : PLATFORM_META[selectedPlatform].label} · {mode === "live" ? "Latest results" : mode === "pending" ? "Awaiting results" : "No completed data"}</span></div>
         <ThreatAnalytics findings={scopeFindings} checkedAt={lastChecked}/>
 
         <div className="queue-context"><span>02 <span className="context-rule"/> Platform scope</span><button type="button" onClick={() => setSelectedPlatform("all")} aria-pressed={selectedPlatform === "all"}>All platforms <ArrowUpRight size={13}/></button></div>

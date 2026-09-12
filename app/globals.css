@@ -583,3 +583,22 @@ html { scroll-behavior: smooth; scroll-padding-top: 24px; }
   .history-table { min-width: 560px; font-size: 11px; }
   .history-table th { font-size: 9px; }
 }
+
+/* Keep the live progress indicator under the action label. */
+.refresh-button-checking {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  height: auto;
+  min-height: 39px;
+  gap: 5px;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.refresh-button-checking .refresh-button-copy { width: 100%; justify-content: center; }
+.refresh-button-checking .refresh-progress { width: 100%; }
+
+@media (max-width: 640px) {
+  .analytics-context { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .refresh-button-checking .refresh-progress { width: 100%; }
+}
