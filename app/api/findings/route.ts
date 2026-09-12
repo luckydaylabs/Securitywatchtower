@@ -532,7 +532,17 @@ function parseInvestigatorResult(payload: unknown) {
 }
 
 function parseVerifierResult(payload: unknown) {
-  const parsed = verifierResultSchema.safeParse(payload);
+  const normalizedPayload = isRecord(payload) && Array.isArray(payload.checks)
+    ? {
+        ...payload,
+        checks: payload.checks.map((check) =>
+          isRecord(check) && typeof check.notes === "string"
+            ? { ...check, notes: clipStageText(check.notes, 1200) }
+            : check,
+        ),
+      }
+    : payload;
+  const parsed = verifierResultSchema.safeParse(normalizedPayload);
   if (!parsed.success) {
     const issues = parsed.error.issues
       .slice(0, 3)
