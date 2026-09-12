@@ -730,7 +730,7 @@ export default function Home() {
           <div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>
 
           {visibleFindings.length ? (
-            <div className="finding-list">
+            <div className="finding-list" role="region" aria-label="Scrollable security announcements" tabIndex={0}>
               {visibleFindings.map((finding) => {
                 const expanded = expandedId === finding.id;
                 const technicalOpen = technicalId === finding.id;
