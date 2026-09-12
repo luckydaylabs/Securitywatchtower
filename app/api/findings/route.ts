@@ -52,7 +52,6 @@ const findingOutputSchema = {
   properties: {
     findings: {
       type: "array",
-      maxItems: MAX_PIPELINE_CANDIDATES,
       items: {
         type: "object",
         properties: {
