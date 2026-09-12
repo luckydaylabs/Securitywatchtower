@@ -533,7 +533,13 @@ function parseInvestigatorResult(payload: unknown) {
 
 function parseVerifierResult(payload: unknown) {
   const parsed = verifierResultSchema.safeParse(payload);
-  if (!parsed.success) throw new Error("Nimble verifier returned an invalid result.");
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.path.join(".") || "result"}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`Nimble verifier returned an invalid result${issues ? ` (${issues})` : ""}.`);
+  }
   return parsed.data;
 }
 
