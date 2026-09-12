@@ -805,7 +805,7 @@ export default function Home() {
         </section>
 
         <aside className="sources-panel" id="sources" aria-labelledby="sources-title">
-          <div className="sources-heading"><Radio size={17}/><h2 id="sources-title">Source catalog</h2><span>{SOURCE_CATALOG.length}</span></div>
+          <div className="sources-heading"><Radio size={17}/><h2 id="sources-title">Sources</h2><span>{SOURCE_CATALOG.length}</span></div>
           <p className="sources-description">Authoritative advisories used by the research agent.</p>
           <div className="source-cards">{SOURCE_CATALOG.map((source, index) => <a key={source.name} href={source.url} target="_blank" rel="noopener noreferrer"><span className="source-number">0{index + 1}</span><span>{source.name}</span><ExternalLink size={13}/></a>)}</div>
           {pendingCount > 0 && <p className="source-note">{pendingCount} new or changed announcements awaiting review. Each check reviews up to three.</p>}
