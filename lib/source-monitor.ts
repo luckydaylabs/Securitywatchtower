@@ -139,10 +139,11 @@ export function parseSource(source: MonitorSource, body: string, until: string):
 }
 
 export async function collectSource(source: MonitorSource, checkpoint: SourceCheckpoint, until: string): Promise<SourceResult> {
+  if (source.id === "msrc") return collectMicrosoftCsaf(checkpoint, until);
   // Old checkpoints contain only a date window, not the full latest-five selection.
   // Ignore their validators once so older announcements are actually retrieved.
   const stored = checkpoint.documents_json ? JSON.parse(checkpoint.documents_json) : null;
-  const policy = source.id === "msrc" ? "latest-five-msrc-evidence-v3" : "latest-five-dates-v2";
+  const policy = "latest-five-dates-v2";
   const cached = stored?.policy === policy && Array.isArray(stored.items) ? stored : null;
   const headers: Record<string, string> = {};
   if (cached && checkpoint.etag) headers["If-None-Match"] = checkpoint.etag;
@@ -154,27 +155,85 @@ export async function collectSource(source: MonitorSource, checkpoint: SourceChe
   const capturedUntil = new Date(Math.max(Date.parse(until), Date.now())).toISOString();
   let items = parseSource(source, body, capturedUntil);
   let warning: string | undefined;
-  if (source.id === "msrc") {
-    // Read the newest release documents first, not recently edited archive documents.
-    const documents = items.sort((a, b) => {
-      const release = (item: Announcement) => Date.parse(item.id.replace(/^msrc:/, "1-")) || 0;
-      return release(b) - release(a) || b.sourceDate.localeCompare(a.sourceDate);
-    });
-    items = [];
-    // Stop once five Windows advisories are available. This is a request bound,
-    // not an age cutoff; a quiet month can fall back to an older release.
-    for (const document of documents.slice(0, 5)) {
-      const detail = await fetchSource(document.url);
-      if (!detail.ok) throw new Error(`Microsoft advisory document returned HTTP ${detail.status}.`);
-      items = latestPerPlatform([...items, ...parseMicrosoftDocument(await boundedText(detail, 25_000_000), capturedUntil)
-        .map(item => ({ ...item, evidenceUrl: document.url }))]);
-      if (items.length >= ANNOUNCEMENTS_PER_PLATFORM) break;
-    }
-    if (items.length < ANNOUNCEMENTS_PER_PLATFORM && documents.length > 5) warning = "Fewer than five Windows announcements were found in the five newest release documents; older documents were not checked.";
-  }
   items = latestPerPlatform(items);
   const documentsJson = JSON.stringify({ policy, items, warning });
   return { items, etag: response.headers.get("etag"), lastModified: response.headers.get("last-modified"), unchanged: false, warning, documentsJson };
+}
+
+export function parseCsafIndex(body: string): { url: string; changedAt: string }[] {
+  const entries = body.trim().split(/\r?\n/).map(line => {
+    const match = line.match(/^"(\d{4}\/msrc_cve-\d{4}-\d+\.json)","([^"]+)"$/i);
+    const changedAt = match && date(match[2]);
+    return match && changedAt ? { url: `https://msrc.microsoft.com/csaf/advisories/${match[1]}`, changedAt } : null;
+  }).filter((entry): entry is { url: string; changedAt: string } => Boolean(entry));
+  if (!entries.length) throw new Error("Microsoft CSAF change index could not be read.");
+  return [...new Map(entries.map(entry => [entry.url, entry])).values()]
+    .sort((a, b) => b.changedAt.localeCompare(a.changedAt) || a.url.localeCompare(b.url));
+}
+
+export function parseMicrosoftCsaf(body: string, url: string, until: string): Announcement[] {
+  const data = JSON.parse(body), tracking = data.document?.tracking;
+  if (data.document?.csaf_version !== "2.0" || !tracking || !Array.isArray(data.vulnerabilities)) throw new Error("Microsoft CSAF advisory has an unexpected format.");
+  const products = new Map<string, string>();
+  const visit = (branches: any[]) => { for (const branch of branches) {
+    if (branch.product?.product_id && branch.product?.name) products.set(branch.product.product_id, branch.product.name);
+    visit(list(branch.branches));
+  } };
+  visit(list(data.product_tree?.branches));
+  for (const product of list<any>(data.product_tree?.full_product_names)) products.set(product.product_id, product.name);
+  const published = date(tracking.initial_release_date);
+  const revised = list<any>(tracking.revision_history).filter(r => !/acknowledg|credit|typo/i.test(r.summary ?? ""))
+    .map(r => date(r.date)).filter((value): value is string => Boolean(value)).sort().at(-1);
+  const sourceDate = revised ?? published;
+  if (!sourceDate || sourceDate > until) return [];
+  return data.vulnerabilities.flatMap((v: any) => {
+    const affected = list<string>(v.product_status?.known_affected).map(id => products.get(id)).filter((name): name is string => Boolean(name && /Windows/i.test(name)));
+    if (!affected.length || !/^CVE-\d{4}-\d+$/.test(v.cve)) return [];
+    const evidence = JSON.stringify({ cve: v.cve, vendorSeverity: data.document.aggregate_severity?.text ?? null,
+      scores: list<any>(v.scores).slice(0, 2).map(s => s.cvss_v4 ?? s.cvss_v3 ?? s.cvss_v2),
+      products: affected.slice(0, 8), productsTruncated: affected.length > 8,
+      notes: list<any>(v.notes).filter(n => n.category !== "legal_disclaimer").slice(0, 2).map(n => plainText(n.text ?? "").slice(0, 250)),
+      remediations: list<any>(v.remediations).slice(0, 2).map(r => ({ details: plainText(r.details ?? "").slice(0, 200), url: r.url })) });
+    return [{ id: `msrc:${v.cve}`, sourceId: "msrc", source: "Microsoft CSAF advisories", title: v.title ?? data.document.title ?? v.cve,
+      url, evidenceUrl: url, sourceDate, platform: "windows" as const, evidence,
+      publishedAt: sourceTimestamp(tracking.initial_release_date), updatedAt: revised && revised !== published ? sourceTimestamp(revised) : undefined }];
+  });
+}
+
+async function collectMicrosoftCsaf(checkpoint: SourceCheckpoint, until: string): Promise<SourceResult> {
+  const policy = "latest-five-msrc-csaf-v1";
+  const stored = checkpoint.documents_json ? JSON.parse(checkpoint.documents_json) : null;
+  const cached = stored?.policy === policy ? stored : null;
+  const headers: Record<string, string> = {};
+  if (cached && checkpoint.etag) headers["If-None-Match"] = checkpoint.etag;
+  if (cached && checkpoint.last_modified) headers["If-Modified-Since"] = checkpoint.last_modified;
+  const response = await fetchSource("https://msrc.microsoft.com/csaf/advisories/changes.csv", headers);
+  if (response.status === 304 && cached) return { items: cached.items, unchanged: true, etag: checkpoint.etag ?? null, lastModified: checkpoint.last_modified ?? null, warning: cached.warning, documentsJson: checkpoint.documents_json! };
+  if (!response.ok) throw new Error(`Microsoft CSAF index returned HTTP ${response.status}.`);
+  const entries = parseCsafIndex(await boundedText(response));
+  let items: Announcement[] = [], offset = 0;
+  const capturedUntil = new Date(Math.max(Date.parse(until), Date.now())).toISOString();
+  // Reuse unchanged document versions without downloading or researching them again.
+  const documents: Record<string, { changedAt: string; items: Announcement[] }> = {};
+  for (; offset < Math.min(entries.length, 100); offset += 5) {
+    // Remaining documents cannot be newer; equal timestamps are interchangeable.
+    if (items.length >= 5 && entries[offset].changedAt <= items[4].sourceDate) break;
+    const batch = entries.slice(offset, offset + 5);
+    const results = await Promise.all(batch.map(async entry => {
+      const previous = cached?.documents?.[entry.url];
+      if (previous?.changedAt === entry.changedAt) { documents[entry.url] = previous; return previous.items as Announcement[]; }
+      const detail = await fetchSource(entry.url);
+      if (!detail.ok) throw new Error(`Microsoft CSAF advisory returned HTTP ${detail.status}.`);
+      const parsed = parseMicrosoftCsaf(await boundedText(detail, 2_000_000), entry.url, capturedUntil);
+      documents[entry.url] = { changedAt: entry.changedAt, items: parsed };
+      return parsed;
+    }));
+    items = latestPerPlatform([...items, ...results.flat()]);
+  }
+  const warning = offset < entries.length && (items.length < 5 || entries[offset].changedAt > items[4].sourceDate)
+    ? "Microsoft CSAF discovery reached its 100-document safety bound; the latest-five selection may be incomplete." : undefined;
+  return { items, unchanged: false, warning, etag: response.headers.get("etag"), lastModified: response.headers.get("last-modified"),
+    documentsJson: JSON.stringify({ policy, items, documents, warning }) };
 }
 
 export function parseMicrosoftDocument(body: string, until: string): Announcement[] {

@@ -176,21 +176,25 @@ test("Research guards cardinality and preserves captured source identity", () =>
   assert.throws(() => validateResearch({ findings: [{ ...finding, id: "unrelated", sourceUrl: "https://ubuntu.com/security/notices/unrelated" }] }, [item]), /unknown announcement/);
 });
 
-test("Current Microsoft documents precede recently edited historical releases", async () => {
+test("CSAF discovery selects five Windows advisories and reuses unchanged documents", async () => {
   const urls: string[] = [];
   globalThis.fetch = async (url: any) => {
     urls.push(String(url));
-    return String(url).endsWith("updates")
-      ? Response.json({ value: ["2016-Jul", "2026-Sep"].map(ID => ({ ID, CurrentReleaseDate: "2026-09-11" })) })
-      : Response.json({ ProductTree: { FullProductName: [{ ProductID: "1", Value: "Windows 11" }] },
-        Vulnerability: Array.from({ length: 8 }, (_, n) => ({ CVE: `CVE-2026-${1000 + n}`, ProductStatuses: [{ ProductID: ["1"] }], RevisionHistory: [{ Date: `2026-09-0${n + 1}` }] })) });
+    return String(url).endsWith("changes.csv")
+      ? new Response(Array.from({ length: 8 }, (_, n) => `"2026/msrc_cve-2026-${1000 + n}.json","2026-09-0${n + 1}T07:00:00Z"`).join("\n"))
+      : Response.json({ document: { csaf_version: "2.0", tracking: { initial_release_date: "2026-09-01T07:00:00Z", revision_history: [{ date: `2026-09-0${Number(String(url).match(/100(\d)/)![1]) + 1}T07:00:00Z`, summary: "Security update" }] } },
+        product_tree: { branches: [{ product: { product_id: "1", name: "Windows 11" } }] },
+        vulnerabilities: [{ cve: String(url).match(/cve-2026-\d+/i)![0].toUpperCase(), product_status: { known_affected: ["1"] } }] });
   };
   try {
     const result = await collectSource(source("msrc"), { etag: "v1", documents_json: JSON.stringify({ done: [], pending: [] }) }, until);
-    assert.match(urls[1], /2026-Sep$/);
-    assert.equal(urls.length, 2);
+    assert.match(urls[0], /csaf\/advisories\/changes.csv$/);
+    assert.equal(urls.length, 6);
     assert.equal(result.items.length, 5);
     assert.equal(result.items[0].id, "msrc:CVE-2026-1007");
+    assert.equal(result.items[0].publishedAt?.value, "2026-09-01T07:00:00.000Z");
+    await collectSource(source("msrc"), { documents_json: result.documentsJson }, until);
+    assert.equal(urls.length, 7);
   } finally { globalThis.fetch = originalFetch; }
 });
 

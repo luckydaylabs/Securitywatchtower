@@ -1,5 +1,5 @@
 export const MONITOR_SOURCES = [
-  { id: "msrc", name: "Microsoft Windows advisories", url: "https://api.msrc.microsoft.com/cvrf/v3.0/updates", domains: ["api.msrc.microsoft.com", "msrc.microsoft.com"] },
+  { id: "msrc", name: "Microsoft CSAF advisories", url: "https://msrc.microsoft.com/csaf", domains: ["api.msrc.microsoft.com", "msrc.microsoft.com"] },
   { id: "ubuntu", name: "Ubuntu Security Notices", url: "https://ubuntu.com/security/notices/atom.xml", domains: ["ubuntu.com"] },
   { id: "apple", name: "Apple security releases", url: "https://support.apple.com/en-us/100100", domains: ["support.apple.com"] },
   { id: "anthropic", name: "Anthropic disclosure ledger", url: "https://red.anthropic.com/2026/cvd/data/ledger.json", domains: ["red.anthropic.com", "anthropic.com"] },
