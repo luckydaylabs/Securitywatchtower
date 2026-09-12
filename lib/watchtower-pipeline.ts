@@ -4,7 +4,7 @@ import { ANNOUNCEMENTS_PER_PLATFORM, collectSource, fingerprint, readEvidence, t
 import { hasNimbleKey, readResearch, researchInput, startResearch, validateResearch, type ResearchRun, type ResearchStage } from "./nimble-research";
 import type { CheckTrigger, Finding, NimbleTrust, SnapshotHistory, PlatformReport } from "./watchtower";
 
-import { CHECK_RUN_BUDGET, platformJobs, nextPlatformJobs, researchBatches, RESEARCH_PLATFORMS, type Candidate, type ResearchJob } from "./platform-research";
+import { platformJobs, nextPlatformJobs, researchBatches, RESEARCH_PLATFORMS, type Candidate, type ResearchJob } from "./platform-research";
 type SourceOutcome = { id: string; status: string; count: number; error?: string };
 type ScanState = { trigger: CheckTrigger; until: string; candidates: Candidate[]; sources: SourceOutcome[];
   run?: ResearchRun; submission?: ResearchStage; investigator?: unknown; verifier?: unknown;
@@ -186,17 +186,12 @@ async function advancePlatformResearch(scan: ScanRow, state: ScanState) {
   await save(scan, state);
   await publishCompletedJobs(scan, state);
   const selected = nextPlatformJobs(jobs);
-  let available = CHECK_RUN_BUDGET - (state.runsStarted ?? 0);
-  // Reserve verification capacity before starting additional research batches.
-  let reserved = jobs.filter(j => (j.stage === "investigator" && j.status === "running") || (j.stage === "verifier" && j.status === "ready")).length;
   const submit: ResearchJob[] = [];
   for (const job of [...selected].sort((a, b) => Number(b.stage === "verifier") - Number(a.stage === "verifier"))) {
     if (job.status !== "ready") continue;
     if (job.submission) { job.status = "blocked"; job.error = "Submission outcome is uncertain; no duplicate was started."; continue; }
-    if (job.stage === "verifier" ? available < 1 : available - reserved < 2) continue;
     const candidates = job.stage === "verifier" ? job.candidates.filter(c => job.investigated?.some(f => f.id === c.id)) : job.candidates;
     researchInput(`${scan.id}:${job.id}`, job.stage, candidates, job.stage === "verifier" ? job.investigated : undefined);
-    available--; reserved += job.stage === "verifier" ? -1 : 1;
     job.submission = true; state.runsStarted = (state.runsStarted ?? 0) + 1; submit.push(job);
   }
   if (submit.length) {
@@ -314,7 +309,7 @@ async function publish(scan: ScanRow, state: ScanState, verified: Finding[]) {
   const findings = await currentFindings();
   const incomplete = state.sources.filter(s => s.status !== "checked").length;
   const unfinished = state.jobs?.filter(j => j.status === "ready" || j.status === "blocked") ?? [];
-  const message = `${verified.length} announcements verified in this check. ${findings.length} retained in history.${incomplete ? ` ${incomplete} sources have incomplete coverage; see Sources.` : ""}${unfinished.length ? " Research is partial; additional announcements remain pending because of the run budget or a research error." : ""}`;
+  const message = `${verified.length} announcements verified in this check. ${findings.length} retained in history.${incomplete ? ` ${incomplete} sources have incomplete coverage; see Check details.` : ""}${unfinished.length ? " Research is partial; additional announcements remain pending because research could not finish." : ""}`;
   const timestamp = now();
   const result = await db.batch([
     write(scan.lease, "INSERT INTO watchtower_snapshots(id,checked_at,trigger,finding_count,critical_count,platform_count,findings_json,trust_json,message,created_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING")
@@ -401,7 +396,7 @@ async function savedFeed(snapshotId?: string) {
     checkedAt: row?.checked_at ?? null, snapshotId: row?.id ?? null, history: history.results.map(historyRow),
     trust: row?.trust_json ? JSON.parse(row.trust_json) as NimbleTrust : undefined, sourceStatuses: sources.results,
     platformReports: state ? platformReports(state, false) : [], runsStarted: state?.runsStarted ?? 0,
-    runBudget: CHECK_RUN_BUDGET, pendingCount: pending.length, message: row?.message ?? "No completed checks yet." };
+    pendingCount: pending.length, message: row?.message ?? "No completed checks yet." };
 }
 function platformReports(state: ScanState, running: boolean): PlatformReport[] {
   const sourceIds = { macos: ["apple"], windows: ["msrc"], linux: ["ubuntu"], ai: ["anthropic", "openai"] };

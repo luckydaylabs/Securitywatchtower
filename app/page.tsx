@@ -80,7 +80,7 @@ type FeedResponse = {
   pendingCount?: number;
   platformReports?: PlatformReport[];
   runsStarted?: number;
-  runBudget?: number;
+  
   status?: "running" | "completed" | "failed" | "partial";
 };
 
@@ -182,7 +182,7 @@ export default function Home() {
   const [lastChecked, setLastChecked] = useState<string>();
   const [trust, setTrust] = useState<NimbleTrust>();
   const [platformReports, setPlatformReports] = useState<PlatformReport[]>([]);
-  const [researchUsage, setResearchUsage] = useState({ used: 0, budget: 8 });
+  const [researchUsage, setResearchUsage] = useState({ used: 0 });
   const [sourceStatuses, setSourceStatuses] = useState<NonNullable<FeedResponse["sourceStatuses"]>>([]);
   const [pendingCount, setPendingCount] = useState(0);
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
@@ -219,7 +219,7 @@ export default function Home() {
       if (payload.history) { setHistory(payload.history); setHistoryStatus(payload.history.length ? "ready" : "empty"); setHistoryError(undefined); }
       if (payload.sourceStatuses) setSourceStatuses(payload.sourceStatuses);
       if (payload.platformReports) setPlatformReports(payload.platformReports);
-      if (typeof payload.runsStarted === "number") setResearchUsage({ used: payload.runsStarted, budget: payload.runBudget ?? 8 });
+      if (typeof payload.runsStarted === "number") setResearchUsage({ used: payload.runsStarted });
       if (typeof payload.pendingCount === "number") setPendingCount(payload.pendingCount);
 
       if (!response.ok) {
@@ -290,7 +290,7 @@ export default function Home() {
       if (payload.checkedAt) setLastChecked(payload.checkedAt);
       if (payload.sourceStatuses) setSourceStatuses(payload.sourceStatuses);
       if (payload.platformReports) setPlatformReports(payload.platformReports);
-      if (typeof payload.runsStarted === "number") setResearchUsage({ used: payload.runsStarted, budget: payload.runBudget ?? 8 });
+      if (typeof payload.runsStarted === "number") setResearchUsage({ used: payload.runsStarted });
       if (typeof payload.pendingCount === "number") setPendingCount(payload.pendingCount);
       if (!response.ok) throw new Error(payload.message ?? "Saved check history could not be loaded.");
       if (payload.status === "running" && payload.runId && payload.agentId && payload.stage) {
@@ -398,7 +398,7 @@ export default function Home() {
         if (payload.trust) setTrust(payload.trust);
         if (payload.sourceStatuses) setSourceStatuses(payload.sourceStatuses);
       if (payload.platformReports) setPlatformReports(payload.platformReports);
-      if (typeof payload.runsStarted === "number") setResearchUsage({ used: payload.runsStarted, budget: payload.runBudget ?? 8 });
+      if (typeof payload.runsStarted === "number") setResearchUsage({ used: payload.runsStarted });
         if (typeof payload.pendingCount === "number") setPendingCount(payload.pendingCount);
 
         if (response.status === 202 || payload.status === "running" || payload.mode === "pending") {
@@ -825,11 +825,6 @@ export default function Home() {
           <div className="sources-heading"><Radio size={17}/><h2 id="sources-title">Sources</h2><span>{SOURCE_CATALOG.length}</span></div>
           <p className="sources-description">Authoritative advisories used by the research agent.</p>
           <div className="source-cards">{SOURCE_CATALOG.map((source, index) => <a key={source.name} href={source.url} target="_blank" rel="noopener noreferrer"><span className="source-number">0{index + 1}</span><span>{source.name}</span><ExternalLink size={13}/></a>)}</div>
-          <p className="source-note">Agent runs this check: {researchUsage.used}/{researchUsage.budget}. Unchanged announcements are not researched again.</p>
-          {platformReports.filter(report => report.status === "partial").map(report => <p className="source-note" key={report.platform}>{PLATFORM_META[report.platform].label}: {report.message}.</p>)}
-          <p className="source-note">Latest five announcements per platform, with no date cutoff. Previously verified results stay in history.</p>
-          {pendingCount > 0 && <p className="source-note">{pendingCount} new or changed announcements in this selection await review. Research continues within the per-check run budget.</p>}
-          {sourceStatuses.filter(source => source.status !== "checked").map(source => <p className="source-note" key={source.id}>{SOURCE_CATALOG.find(item => item.id === source.id)?.name}: {source.error ?? "Coverage is incomplete."}</p>)}
           {trust ? (
             <section className="trust-panel" aria-labelledby="trust-title">
               <div className="trust-heading">
@@ -867,9 +862,16 @@ export default function Home() {
               </details>
             </section>
           ) : null}
-          <div className="research-state"><div><Activity size={15}/><span>Research status</span><span className={`research-status ${isRefreshing ? 'research-running' : ''}`}>{isRefreshing ? 'Running' : mode === 'partial' ? 'Partially completed' : mode === 'fallback' ? 'Unavailable' : mode === 'pending' ? 'Queued' : mode === 'live' ? 'Complete' : 'Standby'}</span></div><p>{isRefreshing ? 'Nimble is checking public advisories.' : mode === 'partial' ? 'Some platforms could not finish. Verified findings are saved; see platform details above.' : mode === 'fallback' ? 'Nimble is unavailable. Check the runtime configuration and retry.' : mode === 'live' ? 'The latest completed check supplied this snapshot.' : 'Run a check to collect current public advisories.'}</p><div className="research-progress" aria-hidden="true"><span className={isRefreshing ? 'progress-scanning' : ''}/></div><small>Run mode <strong>{hourlyMonitoringEnabled === true ? 'Hourly' : 'Manual'}</strong></small></div>
+          <div className="research-state"><div><Activity size={15}/><span>Research status</span><span className={`research-status ${isRefreshing ? 'research-running' : ''}`}>{isRefreshing ? 'Running' : mode === 'partial' ? 'Partially completed' : mode === 'fallback' ? 'Unavailable' : mode === 'pending' ? 'Queued' : mode === 'live' ? 'Complete' : 'Standby'}</span></div><p>{isRefreshing ? 'Nimble is checking public advisories.' : mode === 'partial' ? 'Some platforms could not finish. Verified findings are saved; see Check details below.' : mode === 'fallback' ? 'Nimble is unavailable. Check the runtime configuration and retry.' : mode === 'live' ? 'The latest completed check supplied this snapshot.' : 'Run a check to collect current public advisories.'}</p><div className="research-progress" aria-hidden="true"><span className={isRefreshing ? 'progress-scanning' : ''}/></div><small>Run mode <strong>{hourlyMonitoringEnabled === true ? 'Hourly' : 'Manual'}</strong></small></div>
         </aside>
         </div>
+        <details className="check-details"><summary>Check details</summary>
+          <p className="source-note">Agent runs this check: {researchUsage.used}. Unchanged announcements are not researched again.</p>
+          {platformReports.filter(report => report.status === "partial").map(report => <p className="source-note" key={report.platform}>{PLATFORM_META[report.platform].label}: {report.message}</p>)}
+          <p className="source-note">Latest five announcements per platform, with no date cutoff. Previously verified results stay in history.</p>
+          {pendingCount > 0 && <p className="source-note">{pendingCount} new or changed announcements in this selection await review. </p>}
+          {sourceStatuses.filter(source => source.status !== "checked").map(source => <p className="source-note" key={source.id}>{SOURCE_CATALOG.find(item => item.id === source.id)?.name}: {source.error ?? "Coverage is incomplete."}</p>)}
+        </details>
 
         <section className="history-panel" aria-labelledby="history-title">
           <div className="section-heading history-heading">

@@ -237,7 +237,7 @@ test("Four five-announcement platform lanes dispatch concurrently and persist al
   const db = getDatabase(), scan: any = await startScan("manual");
   for (const c of candidates) await db.prepare("INSERT INTO watchtower_announcements(version_id,advisory_id,source_id,content_hash,source_date,first_seen_at,evidence_json,review_status) VALUES(?,?,?,?,?,?,?,?)")
     .bind(c.versionId, c.id, c.sourceId, c.versionId, c.sourceDate, until, JSON.stringify(c), "pending").run();
-  await db.prepare("UPDATE watchtower_scans SET stage='investigator',state_json=? WHERE id=?").bind(JSON.stringify({ trigger: "manual", until, candidates, sources: MONITOR_SOURCES.map(s => ({ id: s.id, status: "checked", count: 1 })), jobs: platformJobs(candidates), runsStarted: 0 }), scan.runId).run();
+  await db.prepare("UPDATE watchtower_scans SET stage='investigator',state_json=? WHERE id=?").bind(JSON.stringify({ trigger: "manual", until, candidates, sources: MONITOR_SOURCES.map(s => ({ id: s.id, status: "checked", count: 1 })), jobs: platformJobs(candidates), runsStarted: 8 }), scan.runId).run();
   const outputs = new Map<string, unknown>(); let posts = 0, inFlight = 0, peak = 0;
   const originalNow = Date.now; let tick = originalNow(); Date.now = () => tick;
   globalThis.fetch = async (url: any, init?: any) => {
@@ -257,6 +257,7 @@ test("Four five-announcement platform lanes dispatch concurrently and persist al
     for (let n = 0; n < 40; n++) { tick += 20000; result = await advanceScan(scan.runId); if (result.status === "completed") break; }
     assert.equal(result.status, "completed");
     assert.equal(result.findings.length, 20); assert.equal(posts, 8); assert.equal(peak, 4);
+    assert.equal(result.runsStarted, 16); // Continue beyond the former eight-run cap.
     assert.equal(result.platformReports.length, 4);
     assert.equal((await dashboardFeed()).findings.length, 20);
     assert.equal((await advanceScan(scan.runId)).history.length, 1); assert.equal(posts, 8);

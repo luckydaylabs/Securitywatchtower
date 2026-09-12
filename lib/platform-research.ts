@@ -3,7 +3,6 @@ import type { Announcement } from "./source-monitor";
 import type { Finding, NimbleTrust } from "./watchtower";
 
 export const RESEARCH_PLATFORMS = ["macos", "windows", "linux", "ai"] as const;
-export const CHECK_RUN_BUDGET = 8;
 export type Candidate = Announcement & { versionId: string };
 export type ResearchJob = {
   id: string; platform: Finding["platform"]; candidates: Candidate[];
