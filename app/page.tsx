@@ -10,7 +10,6 @@ import {
   CircleAlert,
   Clock3,
   ExternalLink,
-  Info,
   LayoutDashboard,
   Layers3,
   Radar,
@@ -57,13 +56,6 @@ type FeedResponse = {
 type ActiveRun = RunReference & { context: PipelineContext };
 
 const pipelineStages: PipelineStage[] = ["monitor", "investigator", "verifier", "orchestrator"];
-const pipelineStageLabels: Record<PipelineStage, string> = {
-  monitor: "Monitor",
-  investigator: "Investigate",
-  verifier: "Verify",
-  orchestrator: "Orchestrate",
-};
-
 function addPipelineContext(params: URLSearchParams, context: PipelineContext) {
   for (const stage of pipelineStages) {
     const reference = context[stage];
@@ -319,8 +311,9 @@ export default function Home() {
             <div className="brand-mark" aria-hidden="true">
               <Radar size={20} strokeWidth={2.2} />
             </div>
-            <div>
+            <div className="brand-copy">
               <p className="brand-name">WATCHTOWER<span className="brand-slash">/</span><span className="brand-section">Security operations</span></p>
+              <span className="brand-scope"><ScanLine size={13} aria-hidden="true" />macOS · Windows · Linux · AI</span>
             </div>
           </div>
 
@@ -344,44 +337,11 @@ export default function Home() {
       </header>
 
       <div className="page-wrap" id="overview">
-        <section className="command-heading" aria-labelledby="page-title">
-          <div><p className="section-kicker">Security intelligence</p><h1 id="page-title">Command center<span className="heading-period">.</span></h1></div>
-          <span className="operation-label"><ScanLine size={16} /> macOS · Windows · Linux · AI</span>
-        </section>
         <VulnerabilityTicker
           findings={findings.filter((finding) => !reviewedIds.has(finding.id))}
           mode={mode}
           onSelectFinding={focusFinding}
         />
-
-        <div className={`feed-notice ${mode === "live" ? "feed-notice-live" : ""} ${mode === "pending" ? "feed-notice-pending" : ""}`} role="status">
-          {mode === "live" ? <CheckCircle2 size={15} aria-hidden="true" /> : <Info size={15} aria-hidden="true" />}
-          <span>
-            {mode === "pending"
-              ? "Nimble is processing the monitor, investigator, verifier, and orchestrator stages. This can take several minutes."
-              : mode === "fallback"
-                ? "Monitoring is unavailable. Check the Nimble runtime configuration and try again."
-                : mode === "live"
-                  ? "Nimble results · Findings from the latest completed review pipeline. Monitoring runs on demand."
-                  : "Waiting for the first monitoring check."}
-          </span>
-          <span className="feed-snapshot-tag">{mode === "live" ? "LATEST SNAPSHOT" : mode === "pending" ? "PIPELINE ACTIVE" : mode === "fallback" ? "UNAVAILABLE" : "STANDBY"}</span>
-        </div>
-
-        <div className="pipeline-strip" aria-label="Nimble review pipeline">
-          {pipelineStages.map((stage, index) => {
-            const activeIndex = activeRun ? pipelineStages.indexOf(activeRun.stage) : -1;
-            const complete = mode === "live" || (activeIndex > index);
-            const active = activeRun?.stage === stage;
-            return (
-              <span key={stage} className={`pipeline-step ${active ? "pipeline-step-active" : ""} ${complete ? "pipeline-step-complete" : ""}`}>
-                <i>{String(index + 1).padStart(2, "0")}</i>
-                <span>{pipelineStageLabels[stage]}</span>
-                {index < pipelineStages.length - 1 ? <b aria-hidden="true">→</b> : null}
-              </span>
-            );
-          })}
-        </div>
 
         <section className="metrics-grid" aria-label="Current feed overview">
           <div className="metric-card"><div className="metric-heading"><span>Open findings</span><ShieldCheck size={17}/></div><div className="metric-value-row"><strong>{String(openCount).padStart(2, "0")}</strong><div className="metric-mini-bars" aria-hidden="true">{platformOrder.map(platform => <i key={platform} style={{ height: `${5 + countFor(platform) / Math.max(1, openCount) * 38}px` }}/>)}</div></div><div className="metric-caption">Across all platforms<span>{findings.length} in current feed</span></div></div>
