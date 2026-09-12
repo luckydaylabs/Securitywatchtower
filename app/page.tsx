@@ -23,6 +23,7 @@ import {
   PLATFORM_META,
   SOURCE_CATALOG,
   type CheckTrigger,
+  type PlatformReport,
   type Finding,
   type NimbleTrust,
   type PlatformKey,
@@ -76,6 +77,9 @@ type FeedResponse = {
   trigger?: CheckTrigger;
   sourceStatuses?: Array<{ id: string; status: string; error?: string }>;
   pendingCount?: number;
+  platformReports?: PlatformReport[];
+  runsStarted?: number;
+  runBudget?: number;
   status?: "running" | "completed" | "failed";
 };
 
@@ -184,6 +188,8 @@ export default function Home() {
   const [mode, setMode] = useState<FeedMode>("idle");
   const [lastChecked, setLastChecked] = useState<string>();
   const [trust, setTrust] = useState<NimbleTrust>();
+  const [platformReports, setPlatformReports] = useState<PlatformReport[]>([]);
+  const [researchUsage, setResearchUsage] = useState({ used: 0, budget: 8 });
   const [sourceStatuses, setSourceStatuses] = useState<NonNullable<FeedResponse["sourceStatuses"]>>([]);
   const [pendingCount, setPendingCount] = useState(0);
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
@@ -219,6 +225,8 @@ export default function Home() {
       if (Array.isArray(payload.findings)) setFindings(payload.findings);
       if (payload.history) { setHistory(payload.history); setHistoryStatus(payload.history.length ? "ready" : "empty"); setHistoryError(undefined); }
       if (payload.sourceStatuses) setSourceStatuses(payload.sourceStatuses);
+      if (payload.platformReports) setPlatformReports(payload.platformReports);
+      if (typeof payload.runsStarted === "number") setResearchUsage({ used: payload.runsStarted, budget: payload.runBudget ?? 8 });
       if (typeof payload.pendingCount === "number") setPendingCount(payload.pendingCount);
 
       if (!response.ok) {
@@ -288,6 +296,8 @@ export default function Home() {
       setTrust(payload.trust);
       if (payload.checkedAt) setLastChecked(payload.checkedAt);
       if (payload.sourceStatuses) setSourceStatuses(payload.sourceStatuses);
+      if (payload.platformReports) setPlatformReports(payload.platformReports);
+      if (typeof payload.runsStarted === "number") setResearchUsage({ used: payload.runsStarted, budget: payload.runBudget ?? 8 });
       if (typeof payload.pendingCount === "number") setPendingCount(payload.pendingCount);
       if (!response.ok) throw new Error(payload.message ?? "Saved check history could not be loaded.");
       if (payload.status === "running" && payload.runId && payload.agentId && payload.stage) {
@@ -391,6 +401,8 @@ export default function Home() {
 
         if (cancelled) return;
         if (payload.sourceStatuses) setSourceStatuses(payload.sourceStatuses);
+      if (payload.platformReports) setPlatformReports(payload.platformReports);
+      if (typeof payload.runsStarted === "number") setResearchUsage({ used: payload.runsStarted, budget: payload.runBudget ?? 8 });
         if (typeof payload.pendingCount === "number") setPendingCount(payload.pendingCount);
 
         if (response.status === 202 || payload.status === "running" || payload.mode === "pending") {
@@ -630,6 +642,7 @@ export default function Home() {
             const metadata = PLATFORM_META[platform];
             const count = countFor(platform);
             const isSelected = selectedPlatform === platform;
+            const report = platformReports.find(r => r.platform === platform);
             return (
               <button
                 key={platform}
@@ -652,6 +665,7 @@ export default function Home() {
                     <ArrowUpRight size={15} aria-hidden="true" />
                   </div>
                   <p><strong>{String(count).padStart(2, "0")}</strong><span>{count === 1 ? "open finding" : "open findings"}</span></p>
+                  {report && <span className={`platform-coverage platform-coverage-${report.status}`} title={report.message}>{report.status === "running" ? "Checking" : report.status === "partial" ? "Partial coverage" : report.status === "no_changes" ? "No new announcements" : `${report.verified} newly verified`}</span>}
                 </div>
               </button>
             );
@@ -808,7 +822,9 @@ export default function Home() {
           <div className="sources-heading"><Radio size={17}/><h2 id="sources-title">Sources</h2><span>{SOURCE_CATALOG.length}</span></div>
           <p className="sources-description">Authoritative advisories used by the research agent.</p>
           <div className="source-cards">{SOURCE_CATALOG.map((source, index) => <a key={source.name} href={source.url} target="_blank" rel="noopener noreferrer"><span className="source-number">0{index + 1}</span><span>{source.name}</span><ExternalLink size={13}/></a>)}</div>
-          {pendingCount > 0 && <p className="source-note">{pendingCount} new or changed announcements awaiting review. Each check reviews up to three.</p>}
+          <p className="source-note">Agent runs this check: {researchUsage.used}/{researchUsage.budget}. Unchanged announcements are not researched again.</p>
+          {platformReports.filter(report => report.status === "partial").map(report => <p className="source-note" key={report.platform}>{PLATFORM_META[report.platform].label}: {report.message}.</p>)}
+          {pendingCount > 0 && <p className="source-note">{pendingCount} new or changed announcements awaiting review. Research continues by platform within the per-check run budget.</p>}
           {sourceStatuses.filter(source => source.status !== "checked").map(source => <p className="source-note" key={source.id}>{SOURCE_CATALOG.find(item => item.id === source.id)?.name}: {source.error ?? "Coverage is incomplete."}</p>)}
           {trust ? (
             <section className="trust-panel" aria-labelledby="trust-title">

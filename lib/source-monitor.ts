@@ -138,6 +138,12 @@ export async function collectSource(source: MonitorSource, checkpoint: SourceChe
     const ledger: { done: string[]; pending: Array<Announcement & { windowStart: string; windowEnd: string }> } = checkpoint.documents_json ? JSON.parse(checkpoint.documents_json) : { done: [], pending: [] };
     const key = (item: Announcement) => `${item.id}:${item.sourceDate}`;
     for (const item of items) if (!ledger.done.includes(key(item)) && !ledger.pending.some(p => key(p) === key(item))) ledger.pending.push({ ...item, windowStart: since, windowEnd: capturedUntil });
+    // The upstream index can list recently edited 2016 documents before current releases.
+    // Prefer the newest release month, while retaining older documents for real revisions.
+    ledger.pending.sort((a, b) => {
+      const release = (item: Announcement) => Date.parse(item.id.replace(/^msrc:/, "1-")) || 0;
+      return release(b) - release(a) || b.sourceDate.localeCompare(a.sourceDate);
+    });
     const documents = ledger.pending;
     items = [];
     // Drain a durable queue independently of index freshness, one document per check.

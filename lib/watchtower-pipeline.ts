@@ -2,13 +2,13 @@ import { getDatabase } from "../db";
 import { MONITOR_SOURCES } from "./source-config";
 import { collectSource, fingerprint, readEvidence, type Announcement, type SourceCheckpoint } from "./source-monitor";
 import { hasNimbleKey, readResearch, researchInput, startResearch, validateResearch, type ResearchRun, type ResearchStage } from "./nimble-research";
-import type { CheckTrigger, Finding, NimbleTrust, SnapshotHistory } from "./watchtower";
+import type { CheckTrigger, Finding, NimbleTrust, SnapshotHistory, PlatformReport } from "./watchtower";
 
-type Candidate = Announcement & { versionId: string };
+import { CHECK_RUN_BUDGET, platformJobs, nextPlatformJobs, researchBatches, RESEARCH_PLATFORMS, type Candidate, type ResearchJob } from "./platform-research";
 type SourceOutcome = { id: string; status: string; count: number; error?: string };
 type ScanState = { trigger: CheckTrigger; until: string; candidates: Candidate[]; sources: SourceOutcome[];
   run?: ResearchRun; submission?: ResearchStage; investigator?: unknown; verifier?: unknown;
-  investigated?: Finding[]; trust?: NimbleTrust; nextPollAt?: number };
+  investigated?: Finding[]; trust?: NimbleTrust; nextPollAt?: number; jobs?: ResearchJob[]; runsStarted?: number };
 type ScanRow = { id: string; status: string; stage: string; started_at: string; updated_at: string; state_json: string; error: string | null; lease?: string };
 type SnapshotRow = { id: string; checked_at: string; trigger: CheckTrigger; finding_count: number; critical_count: number;
   platform_count: number; findings_json: string; trust_json: string | null; message: string };
@@ -111,10 +111,109 @@ async function collect(scan: ScanRow, state: ScanState) {
     // One source per request keeps worker execution bounded and allows refresh recovery.
     if (state.sources.length < MONITOR_SOURCES.length) return;
   }
-  const rows = await db.prepare("SELECT a.version_id,a.evidence_json FROM watchtower_announcements a WHERE a.review_status='pending' AND NOT EXISTS (SELECT 1 FROM watchtower_announcements newer WHERE newer.advisory_id=a.advisory_id AND (newer.source_date>a.source_date OR (newer.source_date=a.source_date AND (newer.first_seen_at>a.first_seen_at OR (newer.first_seen_at=a.first_seen_at AND newer.version_id>a.version_id))))) ORDER BY a.source_date DESC LIMIT 3")
+  const rows = await db.prepare("SELECT a.version_id,a.evidence_json FROM watchtower_announcements a WHERE a.review_status='pending' AND NOT EXISTS (SELECT 1 FROM watchtower_announcements newer WHERE newer.advisory_id=a.advisory_id AND (newer.source_date>a.source_date OR (newer.source_date=a.source_date AND (newer.first_seen_at>a.first_seen_at OR (newer.first_seen_at=a.first_seen_at AND newer.version_id>a.version_id))))) ORDER BY a.source_date DESC")
     .all<{ version_id: string; evidence_json: string }>();
   state.candidates = rows.results.map(row => ({ ...JSON.parse(row.evidence_json), versionId: row.version_id }));
+  state.jobs = platformJobs(state.candidates);
+  state.runsStarted = 0;
   await save(scan, state, state.candidates.length ? "investigator" : "orchestrator");
+}
+
+async function advancePlatformResearch(scan: ScanRow, state: ScanState) {
+  const jobs = state.jobs!;
+  // Interpret only already-saved responses. Raw provider results survive parser failures.
+  for (const job of [...jobs]) {
+    if (!job.payload || job.status === "done" || job.status === "delegated" || job.status === "blocked") continue;
+    try {
+      const findings = validateResearch(job.payload, job.candidates);
+      if (job.stage === "verifier") {
+        if (findings.some(f => !job.investigated?.some(i => i.id === f.id))) throw new Error("Verifier returned an uninvestigated announcement.");
+        job.verified = findings; job.status = "done";
+      } else {
+        job.investigated = findings;
+        job.rejectedIds = job.candidates.filter(c => !findings.some(f => f.id === c.id)).map(c => c.id);
+        if (!findings.length) { job.verified = []; job.status = "done"; continue; }
+        const candidates = job.candidates.filter(c => findings.some(f => f.id === c.id));
+        const batches = researchBatches(candidates, "verifier", findings);
+        if (batches.length > 1) {
+          job.status = "delegated";
+          jobs.push(...batches.map((rows, index) => ({ id: `${job.id}-verify-${index}`, platform: job.platform,
+            candidates: rows, stage: "verifier" as const, status: "ready" as const,
+            investigated: findings.filter(f => rows.some(c => c.id === f.id)) })));
+        } else {
+          job.stage = "verifier"; job.status = "ready";
+          delete job.run; delete job.payload; delete job.nextPollAt;
+        }
+      }
+    } catch (error) { job.status = "blocked"; job.error = error instanceof Error ? error.message : "Saved result needs review."; }
+  }
+  await save(scan, state);
+  const selected = nextPlatformJobs(jobs);
+  let available = CHECK_RUN_BUDGET - (state.runsStarted ?? 0);
+  // Reserve verification capacity before starting additional research batches.
+  let reserved = jobs.filter(j => (j.stage === "investigator" && j.status === "running") || (j.stage === "verifier" && j.status === "ready")).length;
+  const submit: ResearchJob[] = [];
+  for (const job of [...selected].sort((a, b) => Number(b.stage === "verifier") - Number(a.stage === "verifier"))) {
+    if (job.status !== "ready") continue;
+    if (job.submission) { job.status = "blocked"; job.error = "Submission outcome is uncertain; no duplicate was started."; continue; }
+    if (job.stage === "verifier" ? available < 1 : available - reserved < 2) continue;
+    const candidates = job.stage === "verifier" ? job.candidates.filter(c => job.investigated?.some(f => f.id === c.id)) : job.candidates;
+    researchInput(`${scan.id}:${job.id}`, job.stage, candidates, job.stage === "verifier" ? job.investigated : undefined);
+    available--; reserved += job.stage === "verifier" ? -1 : 1;
+    job.submission = true; state.runsStarted = (state.runsStarted ?? 0) + 1; submit.push(job);
+  }
+  if (submit.length) {
+    // Persist intent for every request before dispatching concurrently. A lost response
+    // requires reconciliation, not a second billable submission after refresh.
+    await save(scan, state);
+    await Promise.all(submit.map(async job => {
+      try {
+        const candidates = job.stage === "verifier" ? job.candidates.filter(c => job.investigated?.some(f => f.id === c.id)) : job.candidates;
+        job.run = await startResearch(`${scan.id}:${job.id}`, job.stage, candidates, job.stage === "verifier" ? job.investigated : undefined, job.platform);
+        delete job.submission; job.status = "running"; job.nextPollAt = Date.now() + 15000;
+      } catch (error) {
+        if (error && typeof error === "object" && "submissionRejected" in error) delete job.submission;
+        job.status = "blocked"; job.error = error instanceof Error ? error.message : "Research could not start.";
+      }
+    }));
+    await save(scan, state);
+    return;
+  }
+  const polling = selected.filter(j => j.status === "running" && j.run && !j.payload && (j.nextPollAt ?? 0) <= Date.now());
+  if (polling.length) {
+    await Promise.all(polling.map(async job => {
+      try {
+        const result = await readResearch(job.run!);
+        job.nextPollAt = Date.now() + 15000;
+        if (result.status === "completed") {
+          job.payload = result.payload; job.trust = result.trust;
+          (job.outputs ??= []).push({ stage: job.stage, run: job.run!, payload: result.payload, trust: result.trust });
+        }
+      } catch (error) {
+        const retryable = error instanceof TypeError || error instanceof DOMException || (error && typeof error === "object" && "retryable" in error);
+        job.nextPollAt = Date.now() + 30000;
+        if (!retryable) { job.status = "blocked"; job.error = error instanceof Error ? error.message : "Research needs review."; }
+      }
+    }));
+    await save(scan, state);
+    return;
+  }
+  if (jobs.some(j => j.status === "running")) return;
+  if (jobs.some(j => j.submission)) {
+    await save(scan, state, scan.stage, "blocked", "A platform submission has an uncertain outcome. Saved identifiers must be reconciled before another check; no duplicate was started.");
+    return;
+  }
+  const completed = jobs.filter(j => j.status === "done");
+  const verified = completed.flatMap(j => j.verified ?? []);
+  state.investigated = jobs.flatMap(j => j.investigated ?? []);
+  const handled = new Set(jobs.flatMap(j => [...(j.rejectedIds ?? []), ...(j.status === "done" ? j.candidates.map(c => c.id) : [])]));
+  // Unfinished evidence remains pending, never silently rejected or removed.
+  state.candidates = state.candidates.filter(c => handled.has(c.id));
+  const traces = completed.filter(j => j.stage === "verifier" && j.trust);
+  state.trust = { reasoning: "Evidence from completed platform verification runs; claim paths are scoped by research job.",
+    sources: Array.from(new Map(traces.flatMap(j => j.trust!.sources).map(s => [s.url, s])).values()),
+    claims: traces.flatMap(j => j.trust!.claims.map(c => ({ ...c, researchJob: j.id, platform: j.platform }))) };
+  await publish(scan, state, verified);
 }
 
 async function currentFindings(): Promise<Finding[]> {
@@ -135,7 +234,8 @@ async function publish(scan: ScanRow, state: ScanState, verified: Finding[]) {
     .bind(accepted.has(item.id) ? "accepted" : "rejected", accepted.has(item.id) ? JSON.stringify(accepted.get(item.id)) : null, scan.id, item.versionId)), assertLease(scan.lease!)]);
   const findings = await currentFindings();
   const incomplete = state.sources.filter(s => s.status !== "checked").length;
-  const message = `${verified.length} announcements verified in this check. ${findings.length} retained in history.${incomplete ? ` ${incomplete} sources have incomplete coverage; see Sources.` : ""}`;
+  const unfinished = state.jobs?.filter(j => j.status === "ready" || j.status === "blocked") ?? [];
+  const message = `${verified.length} announcements verified in this check. ${findings.length} retained in history.${incomplete ? ` ${incomplete} sources have incomplete coverage; see Sources.` : ""}${unfinished.length ? " Research is partial; additional announcements remain pending because of the run budget or a research error." : ""}`;
   const timestamp = now();
   const result = await db.batch([
     write(scan.lease, "INSERT INTO watchtower_snapshots(id,checked_at,trigger,finding_count,critical_count,platform_count,findings_json,trust_json,message,created_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING")
@@ -164,6 +264,7 @@ export async function advanceScan(scanId?: string) {
     const state: ScanState = JSON.parse(scan.state_json);
     try {
       if (scan.stage === "monitor") await collect(scan, state);
+      else if (state.jobs?.length) await advancePlatformResearch(scan, state);
       else if (scan.stage === "orchestrator") await publish(scan, state, state.verifier ? validateResearch(state.verifier, state.candidates) : []);
       else {
         if (scan.stage !== "investigator" && scan.stage !== "verifier") throw new Error("Saved scan has an unsupported stage.");
@@ -213,17 +314,36 @@ async function savedFeed(snapshotId?: string) {
     : await db.prepare("SELECT * FROM watchtower_snapshots ORDER BY checked_at DESC LIMIT 1").first<SnapshotRow>();
   const history = await db.prepare("SELECT id,checked_at,trigger,finding_count,critical_count,platform_count FROM watchtower_snapshots ORDER BY checked_at DESC LIMIT 100").all<SnapshotRow>();
   const sources = await db.prepare("SELECT id,status,error,checked_at,succeeded_at FROM watchtower_sources").all();
+  const savedScan = row?.id.startsWith("scan:") ? await db.prepare("SELECT state_json FROM watchtower_scans WHERE id=?").bind(row.id.slice(5)).first<{ state_json: string }>() : null;
+  const state: ScanState | undefined = savedScan ? JSON.parse(savedScan.state_json) : undefined;
   const pending = await db.prepare("SELECT COUNT(*) AS count FROM watchtower_announcements WHERE review_status='pending'").first<{ count: number }>();
   return { mode: row ? "live" : "idle", status: "completed", findings: row ? JSON.parse(row.findings_json) as Finding[] : [],
     checkedAt: row?.checked_at ?? null, snapshotId: row?.id ?? null, history: history.results.map(historyRow),
     trust: row?.trust_json ? JSON.parse(row.trust_json) as NimbleTrust : undefined, sourceStatuses: sources.results,
-    pendingCount: pending?.count ?? 0, message: row?.message ?? "No completed checks yet." };
+    platformReports: state ? platformReports(state, false) : [], runsStarted: state?.runsStarted ?? 0,
+    runBudget: CHECK_RUN_BUDGET, pendingCount: pending?.count ?? 0, message: row?.message ?? "No completed checks yet." };
+}
+function platformReports(state: ScanState, running: boolean): PlatformReport[] {
+  const sourceIds = { macos: ["apple"], windows: ["msrc"], linux: ["ubuntu"], ai: ["anthropic", "openai"] };
+  return RESEARCH_PLATFORMS.map(platform => {
+    const sources = state.sources.filter(s => sourceIds[platform].includes(s.id));
+    const jobs = state.jobs?.filter(j => j.platform === platform) ?? [];
+    const pending = jobs.some(j => j.status === "ready" || j.status === "running" || j.status === "blocked");
+    const sourcePartial = sources.length !== sourceIds[platform].length || sources.some(s => s.status !== "checked");
+    const verified = jobs.flatMap(j => j.verified ?? []).length;
+    const status = running && (pending || sources.length !== sourceIds[platform].length) ? "running" : sourcePartial || pending ? "partial" : verified ? "checked" : "no_changes";
+    const failure = jobs.find(j => j.error)?.error;
+    return { platform, status, verified, message: status === "running" ? "Check in progress" : status === "partial"
+      ? failure ?? (pending ? "Additional announcements await research" : "Source coverage is incomplete")
+      : verified ? `${verified} announcements verified in this check` : "No new supported announcements in the checked sources" };
+  });
 }
 async function scanResponse(scan: ScanRow) {
   const state: ScanState = JSON.parse(scan.state_json);
   const feed = await savedFeed();
   return { ...feed, mode: scan.status === "blocked" ? "fallback" : "pending", status: scan.status === "blocked" ? "failed" : "running",
     scanId: scan.id, runId: scan.id, agentId: "watchtower", stage: scan.stage, startedAt: scan.started_at, trigger: state.trigger,
+    platformReports: platformReports(state, scan.status === "running"), runsStarted: state.runsStarted ?? 0,
     message: scan.error ?? "Check in progress. Previously saved announcements remain available.", resumable: true };
 }
 export async function dashboardFeed(snapshotId?: string) {

@@ -2,6 +2,7 @@ import { MONITOR_SOURCES } from "./source-config";
 export type PlatformKey = "all" | "macos" | "windows" | "linux" | "ai";
 export type Severity = "critical" | "high" | "medium" | "low";
 export type CheckTrigger = "manual" | "automatic";
+export type PlatformReport = { platform: Exclude<PlatformKey, "all">; status: "running" | "partial" | "checked" | "no_changes"; verified: number; message: string };
 
 export type SnapshotHistory = {
   id: string;
