@@ -217,6 +217,7 @@ export default function Home() {
       });
       const payload = (await response.json()) as FeedResponse;
       if (Array.isArray(payload.findings)) setFindings(payload.findings);
+      if (payload.history) { setHistory(payload.history); setHistoryStatus(payload.history.length ? "ready" : "empty"); setHistoryError(undefined); }
       if (payload.sourceStatuses) setSourceStatuses(payload.sourceStatuses);
       if (typeof payload.pendingCount === "number") setPendingCount(payload.pendingCount);
 
