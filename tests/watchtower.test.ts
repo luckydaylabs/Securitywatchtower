@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { MONITOR_SOURCES } from "../lib/source-config";
 import { parseSource, parseMicrosoftDocument, collectSource, latestPerPlatform, fingerprint, type Announcement } from "../lib/source-monitor";
-import { researchInput, researchSchema, validateResearch, readResearch } from "../lib/nimble-research";
+import { researchInput, researchSchema, validateResearch, readResearch, startResearch } from "../lib/nimble-research";
 import { startScan, advanceScan, dashboardFeed } from "../lib/watchtower-pipeline";
 import { getDatabase, resetDatabase, setBatchHook } from "./d1-fixture";
 import { platformJobs, researchBatches } from "../lib/platform-research";
@@ -40,10 +40,30 @@ test("Verified platform findings publish while another runs, survive reload and 
   saved.jobs[1].status = "blocked";
   await db.prepare("UPDATE watchtower_scans SET state_json=? WHERE id=?").bind(JSON.stringify(saved), scan.runId).run();
   const finished = await advanceScan(scan.runId);
-  assert.equal(finished.status, "completed");
+  assert.equal(finished.status, "partial");
+  assert.equal(finished.history[0].outcome, "partial");
+  assert.equal((await dashboardFeed()).mode, "partial");
   assert.equal(finished.findings.length, 1);
   assert.equal(finished.history.length, 1);
   assert.equal((await advanceScan(scan.runId)).history.length, 1);
+});
+
+test("Both research stages receive the unknown severity contract without paid runs", async () => {
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    assert.deepEqual(body.output_schema, researchSchema);
+    assert.match(body.input, /use unknown/i);
+    assert.match(body.skill, /unknown/);
+    return Response.json({ id: "test-run", agent_id: "test-agent" });
+  };
+  try {
+    await startResearch("test", "investigator", [item], undefined, "linux");
+    await startResearch("test", "verifier", [item], validateResearch({ findings: [finding] }, [item]), "linux");
+  } finally { globalThis.fetch = originalFetch; }
+  for (const severity of [null, undefined, "", "unknown", " Unknown "]) {
+    assert.equal(validateResearch({ findings: [{ ...finding, severity }] }, [item])[0].severity, "unknown");
+  }
+  assert.throws(() => validateResearch({ findings: [{ ...finding, severity: "invalid" }] }, [item]), /severity/);
 });
 
 test("Windows verification retains valid structured severity evidence and official document URL", () => {

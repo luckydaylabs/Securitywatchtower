@@ -6,9 +6,9 @@ import { type Finding, type Severity } from "@/lib/watchtower";
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
-const severityOrder: Severity[] = ["critical", "high", "medium", "low"];
-const colors: Record<Severity, string> = { critical: "#f46b2b", high: "#707c60", medium: "#adb599", low: "#d6dcca" };
-const names: Record<Severity, string> = { critical: "Critical", high: "High", medium: "Medium", low: "Low" };
+const severityOrder: Severity[] = ["critical", "high", "medium", "low", "unknown"];
+const colors: Record<Severity, string> = { critical: "#f46b2b", high: "#707c60", medium: "#adb599", low: "#d6dcca", unknown: "#92979c" };
+const names: Record<Severity, string> = { critical: "Critical", high: "High", medium: "Medium", low: "Low", unknown: "Unknown" };
 type Range = "feed" | "7" | "30" | "90";
 type Bucket = { start: number; end: number; counts: Record<Severity, number>; total: number };
 
@@ -40,7 +40,7 @@ export function detectionBuckets(findings: Finding[], range: Range, reference: n
     count = days / (step / DAY);
   }
   const start = end - count * step;
-  const buckets: Bucket[] = Array.from({ length: count }, (_, i) => ({ start: start + i * step, end: start + (i + 1) * step, counts: { critical: 0, high: 0, medium: 0, low: 0 }, total: 0 }));
+  const buckets: Bucket[] = Array.from({ length: count }, (_, i) => ({ start: start + i * step, end: start + (i + 1) * step, counts: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 }, total: 0 }));
   for (const finding of dated) {
     const index = Math.floor((finding.time - start) / step);
     if (index >= 0 && index < buckets.length) {
@@ -134,7 +134,7 @@ function Timeline({ findings, checkedAt }: { findings: Finding[]; checkedAt?: st
         <span className="chart-readout-hint">Select a column</span>
       </div>
       <div className="chart-footnote">Dates supplied by the current feed. Empty periods do not confirm an absence of threats.{invalidCount > 0 ? ` ${invalidCount} undated findings excluded.` : ''}</div>
-      <details className="chart-data"><summary>View chart data <ChevronDown size={12}/></summary><div className="chart-data-scroll"><table><caption>Findings by detection time (UTC)</caption><thead><tr><th>Period start</th><th>Total</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th></tr></thead><tbody>{buckets.map(b => <tr key={b.start}><td>{new Date(b.start).toISOString().slice(0, 16).replace('T', ' ')}</td><td>{b.total}</td>{severityOrder.map(s => <td key={s}>{b.counts[s]}</td>)}</tr>)}</tbody></table></div></details>
+      <details className="chart-data"><summary>View chart data <ChevronDown size={12}/></summary><div className="chart-data-scroll"><table><caption>Findings by detection time (UTC)</caption><thead><tr><th>Period start</th><th>Total</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th>Unknown</th></tr></thead><tbody>{buckets.map(b => <tr key={b.start}><td>{new Date(b.start).toISOString().slice(0, 16).replace('T', ' ')}</td><td>{b.total}</td>{severityOrder.map(s => <td key={s}>{b.counts[s]}</td>)}</tr>)}</tbody></table></div></details>
     </section>
   );
 }

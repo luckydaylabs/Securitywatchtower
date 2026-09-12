@@ -27,7 +27,7 @@ function write(owner: string | undefined, sql: string): D1PreparedStatement {
   return getDatabase().prepare(fenced);
 }
 const historyRow = (row: SnapshotRow): SnapshotHistory => ({ id: row.id, checkedAt: row.checked_at, trigger: row.trigger,
-  findingCount: row.finding_count, criticalCount: row.critical_count, platformCount: row.platform_count });
+  findingCount: row.finding_count, criticalCount: row.critical_count, platformCount: row.platform_count, outcome: /partial|incomplete coverage/i.test(row.message ?? "") ? "partial" : "completed" });
 
 async function claim(): Promise<string | null> {
   const db = getDatabase();
@@ -371,12 +371,13 @@ async function savedFeed(snapshotId?: string) {
   const db = getDatabase();
   const row = snapshotId ? await db.prepare("SELECT * FROM watchtower_snapshots WHERE id=?").bind(snapshotId).first<SnapshotRow>()
     : await db.prepare("SELECT * FROM watchtower_snapshots ORDER BY checked_at DESC LIMIT 1").first<SnapshotRow>();
-  const history = await db.prepare("SELECT id,checked_at,trigger,finding_count,critical_count,platform_count FROM watchtower_snapshots ORDER BY checked_at DESC LIMIT 100").all<SnapshotRow>();
+  const history = await db.prepare("SELECT id,checked_at,trigger,finding_count,critical_count,platform_count,message FROM watchtower_snapshots ORDER BY checked_at DESC LIMIT 100").all<SnapshotRow>();
   const sources = await db.prepare("SELECT id,status,error,checked_at,succeeded_at FROM watchtower_sources").all();
   const savedScan = row?.id.startsWith("scan:") ? await db.prepare("SELECT state_json FROM watchtower_scans WHERE id=?").bind(row.id.slice(5)).first<{ state_json: string }>() : null;
   const state: ScanState | undefined = savedScan ? JSON.parse(savedScan.state_json) : undefined;
   const pending = await pendingLatestAnnouncements();
-  return { mode: row ? "live" : "idle", status: "completed", findings: row ? await hydrateFindingDates(JSON.parse(row.findings_json) as Finding[]) : [],
+  const partial = state ? state.sources.some(s => s.status !== "checked") || Boolean(state.jobs?.some(j => ["blocked", "ready", "running"].includes(j.status))) : /partial|incomplete coverage/i.test(row?.message ?? "");
+  return { mode: row ? partial ? "partial" : "live" : "idle", status: partial ? "partial" : "completed", findings: row ? await hydrateFindingDates(JSON.parse(row.findings_json) as Finding[]) : [],
     checkedAt: row?.checked_at ?? null, snapshotId: row?.id ?? null, history: history.results.map(historyRow),
     trust: row?.trust_json ? JSON.parse(row.trust_json) as NimbleTrust : undefined, sourceStatuses: sources.results,
     platformReports: state ? platformReports(state, false) : [], runsStarted: state?.runsStarted ?? 0,

@@ -1,7 +1,7 @@
 import { MONITOR_SOURCES } from "./source-config";
 import type { AnnouncementDates } from "./announcement-dates";
 export type PlatformKey = "all" | "macos" | "windows" | "linux" | "ai";
-export type Severity = "critical" | "high" | "medium" | "low";
+export type Severity = "critical" | "high" | "medium" | "low" | "unknown";
 export type CheckTrigger = "manual" | "automatic";
 export type PlatformReport = { platform: Exclude<PlatformKey, "all">; status: "running" | "partial" | "checked" | "no_changes"; verified: number; message: string };
 
@@ -12,6 +12,7 @@ export type SnapshotHistory = {
   findingCount: number;
   criticalCount: number;
   platformCount: number;
+  outcome?: "completed" | "partial";
 };
 
 export type NimbleTrustSource = {

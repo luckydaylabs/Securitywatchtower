@@ -34,7 +34,7 @@ import {
 import { VulnerabilityTicker } from "@/components/vulnerability-ticker";
 import { ThreatAnalytics } from "@/components/threat-analytics";
 
-type FeedMode = "idle" | "live" | "fallback" | "pending";
+type FeedMode = "idle" | "live" | "fallback" | "pending" | "partial";
 type PipelineStage = "monitor" | "investigator" | "verifier" | "orchestrator";
 
 type RunReference = {
@@ -81,7 +81,7 @@ type FeedResponse = {
   platformReports?: PlatformReport[];
   runsStarted?: number;
   runBudget?: number;
-  status?: "running" | "completed" | "failed";
+  status?: "running" | "completed" | "failed" | "partial";
 };
 
 type ActiveRun = RunReference & { context: PipelineContext; startedAt: number };
@@ -99,6 +99,7 @@ const severityLabels: Record<Severity, string> = {
   high: "High",
   medium: "Medium",
   low: "Low",
+  unknown: "Unknown",
 };
 
 const severityDescriptions: Record<Severity, string> = {
@@ -106,6 +107,7 @@ const severityDescriptions: Record<Severity, string> = {
   high: "Review today",
   medium: "Review soon",
   low: "Monitor",
+  unknown: "Severity not established",
 };
 
 const platformOrder: Exclude<PlatformKey, "all">[] = [
@@ -224,7 +226,7 @@ export default function Home() {
         throw new Error(payload.message ?? "The latest findings could not be loaded.");
       }
 
-      if (payload.mode === "live") {
+      if (payload.mode === "live" || payload.mode === "partial") {
         if (Array.isArray(payload.findings)) setFindings(payload.findings);
         setTrust(payload.trust);
         if (Array.isArray(payload.history)) {
@@ -236,7 +238,7 @@ export default function Home() {
         setReviewedIds(new Set());
         setExpandedId(null);
         setTechnicalId(null);
-        setMode("live");
+        setMode(payload.mode ?? "live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setAnnouncement(payload.message ?? "Findings refreshed.");
         isRefreshingRef.current = false;
@@ -300,8 +302,8 @@ export default function Home() {
           startedAt: payload.startedAt ? Date.parse(payload.startedAt) : Date.now(), context: {} });
         return;
       }
-      if (payload.mode === "live") {
-        setMode("live");
+      if (payload.mode === "live" || payload.mode === "partial") {
+        setMode(payload.mode ?? "live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setSelectedSnapshotId(payload.selectedSnapshot?.id ?? snapshotId ?? payload.history?.[0]?.id);
         setSelectedPlatform("all");
@@ -528,7 +530,7 @@ export default function Home() {
     : 0;
   const monitoringStatus = isRefreshing
     ? `${checkTrigger === "manual" ? "Manual" : "Hourly"} check in progress`
-    : hourlyMonitoringEnabled === false
+    : mode === "partial" ? "Check partially completed" : mode === "fallback" ? "Check needs attention" : hourlyMonitoringEnabled === false
       ? "Manual monitoring"
       : hourlyMonitoringEnabled === true
         ? "Hourly monitoring"
@@ -592,7 +594,7 @@ export default function Home() {
             >
               <span className="refresh-button-copy">
                 <RefreshCw size={16} className={isRefreshing ? "spin" : ""} aria-hidden="true" />
-                <span>{isRefreshing ? `${checkTrigger === "manual" ? "Manual" : "Hourly"} check` : hourlyMonitoringEnabled === false ? "Run manual check" : "Run check"}</span>
+                <span>{isRefreshing ? `${checkTrigger === "manual" ? "Manual" : "Hourly"} check` : mode === "partial" ? "Check partially completed" : mode === "fallback" ? "Check needs attention" : hourlyMonitoringEnabled === false ? "Run manual check" : "Run check"}</span>
               </span>
               {isRefreshing ? (
                 <span
@@ -619,6 +621,8 @@ export default function Home() {
           onSelectFinding={focusFinding}
         />
 
+        {mode === "partial" && <div className="partial-check-notice" role="status"><strong>Check partially completed</strong><p>Verified announcements are saved. Some platforms could not finish; see their errors under Sources. A new manual check may use additional agent runs.</p></div>}
+        {mode === "fallback" && <div className="partial-check-notice" role="alert"><strong>Check needs attention</strong><p>{error ?? "The check could not finish. Saved findings remain available."}</p></div>}
         <section className="metrics-grid" aria-label="Current feed overview">
           <div className="metric-card"><div className="metric-heading"><span>Open findings</span><ShieldCheck size={17}/></div><div className="metric-value-row"><strong>{String(openCount).padStart(2, "0")}</strong><div className="metric-mini-bars" aria-hidden="true">{platformOrder.map(platform => <i key={platform} style={{ height: `${5 + countFor(platform) / Math.max(1, openCount) * 38}px` }}/>)}</div></div><div className="metric-caption">Across all platforms<span>{findings.length} in current feed</span></div></div>
           <div className="metric-card metric-critical"><div className="metric-heading"><span>Critical alerts</span><TriangleAlert size={17}/></div><div className="metric-value-row"><strong>{String(criticalCount).padStart(2, "0")}</strong><span className="critical-marker" aria-hidden="true"><CircleAlert size={30} strokeWidth={1.25}/></span></div><div className="metric-caption">{criticalCount ? "Priority review required" : "No critical findings open"}<span className="critical-tag">P1</span></div></div>
@@ -626,7 +630,7 @@ export default function Home() {
           <div className="metric-card"><div className="metric-heading"><span>Reviewed</span><CheckCircle2 size={17}/></div><div className="metric-value-row"><strong>{String(reviewedCount).padStart(2, "0")}</strong><span className="review-fraction">of {findings.length}</span></div><div className="metric-caption">This session{reviewedCount > 0 ? <button type="button" onClick={() => { setReviewedIds(new Set()); setAnnouncement("Reviewed findings restored to the queue."); }}>Reset reviews</button> : <span>Ready for triage</span>}</div></div>
         </section>
 
-        <div className="analytics-context"><span>Security Announcements History</span><span>{selectedPlatform === "all" ? "All platforms" : PLATFORM_META[selectedPlatform].label} · {mode === "live" ? "Latest results" : mode === "pending" ? "Awaiting results" : "No completed data"}</span></div>
+        <div className="analytics-context"><span>Security Announcements History</span><span>{selectedPlatform === "all" ? "All platforms" : PLATFORM_META[selectedPlatform].label} · {mode === "partial" ? "Partial results" : mode === "live" ? "Latest results" : mode === "pending" ? "Awaiting results" : "No completed data"}</span></div>
         <ThreatAnalytics findings={scopeFindings} checkedAt={lastChecked}/>
 
         <div className="queue-context"><span>Platforms Monitored</span><button type="button" onClick={() => setSelectedPlatform("all")} aria-pressed={selectedPlatform === "all"}>All platforms <ArrowUpRight size={13}/></button></div>
@@ -861,7 +865,7 @@ export default function Home() {
               </details>
             </section>
           ) : null}
-          <div className="research-state"><div><Activity size={15}/><span>Research status</span><span className={`research-status ${isRefreshing ? 'research-running' : ''}`}>{isRefreshing ? 'Running' : mode === 'fallback' ? 'Unavailable' : mode === 'pending' ? 'Queued' : mode === 'live' ? 'Complete' : 'Standby'}</span></div><p>{isRefreshing ? 'Nimble is checking public advisories.' : mode === 'fallback' ? 'Nimble is unavailable. Check the runtime configuration and retry.' : mode === 'live' ? 'The latest completed check supplied this snapshot.' : 'Run a check to collect current public advisories.'}</p><div className="research-progress" aria-hidden="true"><span className={isRefreshing ? 'progress-scanning' : ''}/></div><small>Run mode <strong>{hourlyMonitoringEnabled === true ? 'Hourly' : 'Manual'}</strong></small></div>
+          <div className="research-state"><div><Activity size={15}/><span>Research status</span><span className={`research-status ${isRefreshing ? 'research-running' : ''}`}>{isRefreshing ? 'Running' : mode === 'partial' ? 'Partially completed' : mode === 'fallback' ? 'Unavailable' : mode === 'pending' ? 'Queued' : mode === 'live' ? 'Complete' : 'Standby'}</span></div><p>{isRefreshing ? 'Nimble is checking public advisories.' : mode === 'partial' ? 'Some platforms could not finish. Verified findings are saved; see platform details above.' : mode === 'fallback' ? 'Nimble is unavailable. Check the runtime configuration and retry.' : mode === 'live' ? 'The latest completed check supplied this snapshot.' : 'Run a check to collect current public advisories.'}</p><div className="research-progress" aria-hidden="true"><span className={isRefreshing ? 'progress-scanning' : ''}/></div><small>Run mode <strong>{hourlyMonitoringEnabled === true ? 'Hourly' : 'Manual'}</strong></small></div>
         </aside>
         </div>
 
@@ -898,7 +902,7 @@ export default function Home() {
                 <thead>
                   <tr>
                     <th scope="col">Checked</th>
-                    <th scope="col">Run mode</th>
+                    <th scope="col">Run mode</th><th scope="col">Outcome</th>
                     <th scope="col">Findings</th>
                     <th scope="col">Critical</th>
                     <th scope="col">Platforms</th>
@@ -919,6 +923,7 @@ export default function Home() {
                         </button>
                       </td>
                       <td><span className={`history-trigger history-trigger-${snapshot.trigger}`}>{snapshot.trigger === "automatic" ? "Hourly" : "Manual"}</span></td>
+                      <td>{snapshot.outcome === "partial" ? "Partial" : "Complete"}</td>
                       <td>{String(snapshot.findingCount).padStart(2, "0")}</td>
                       <td className={snapshot.criticalCount ? "history-critical" : undefined}>{String(snapshot.criticalCount).padStart(2, "0")}</td>
                       <td>{String(snapshot.platformCount).padStart(2, "0")}/04</td>

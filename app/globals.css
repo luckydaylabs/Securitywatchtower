@@ -635,3 +635,10 @@ html { scroll-behavior: smooth; scroll-padding-top: 24px; }
   .analytics-context { flex-direction: column; align-items: flex-start; gap: 6px; }
   .refresh-button-checking .refresh-progress { width: 100%; }
 }
+/* Unknown severity is separate from low risk; partial checks retain visible results. */
+.severity-unknown { background: #92979c; }
+.severity-chip-unknown, .ticker-severity-unknown { background: #e8eaec; color: #41484f; }
+.partial-check-notice { margin: 16px 0; padding: 16px 20px; border: 1px solid #d6aa7d; border-radius: 8px; background: #fff4e8; color: #624225; }
+.partial-check-notice p { margin: 6px 0 0; font-size: 14px; line-height: 1.5; }
+.vulnerability-ticker-partial .ticker-status { color: #805c2f; }
+.vulnerability-ticker-partial .ticker-status-dot { background: #b88242; }
