@@ -15,12 +15,12 @@ const fields = {
 };
 export const findingValidator = z.object(fields);
 const properties = Object.fromEntries(Object.keys(fields).map(key => [key, {
-  type: "string", minLength: 1, maxLength: ["whatHappened", "whyItMatters", "nextStep"].includes(key) ? 600 : key === "summary" || key === "evidenceNote" ? 400 : key === "sourceUrl" ? 1000 : ["id", "source", "signalType"].includes(key) ? 160 : 240,
+  type: "string", description: `Nonempty ${key}. Keep concise: ${["whatHappened", "whyItMatters", "nextStep"].includes(key) ? 600 : key === "summary" || key === "evidenceNote" ? 400 : key === "sourceUrl" ? 1000 : ["id", "source", "signalType"].includes(key) ? 160 : 240} characters or fewer.`,
   ...(key === "platform" ? { enum: ["macos", "windows", "linux", "ai"] } : {}),
   ...(key === "severity" ? { enum: ["critical", "high", "medium", "low"] } : {}),
 }]));
 export const researchSchema = { type: "object", required: ["findings"], additionalProperties: false, properties: {
-  findings: { type: "array", maxItems: 3, items: { type: "object", properties, required: Object.keys(fields), additionalProperties: false } },
+  findings: { type: "array", description: "At most three supported announcements, using only supplied IDs. Return an empty array if none are supported.", items: { type: "object", properties, required: Object.keys(fields), additionalProperties: false } },
 } };
 
 function config() {
@@ -44,8 +44,9 @@ async function errorResponse(response: Response): Promise<Error> {
       detail = typeof data.error === "string" ? data.error : typeof data.error?.message === "string" ? data.error.message : typeof data.detail?.message === "string" ? data.detail.message : typeof data.detail?.error === "string" ? data.detail.error : typeof data.detail === "string" ? data.detail : Array.isArray(data.detail)
         ? data.detail.slice(0, 3).map((d: any) => `${Array.isArray(d?.loc) ? d.loc.join(".") : "request"}: ${typeof d?.msg === "string" ? d.msg : d?.type ?? "invalid value"}`).join("; ")
         : typeof data.message === "string" ? data.message : `Validation envelope fields: ${Object.keys(data).slice(0, 8).join(", ")}`;
-      const validation = JSON.stringify(data, (key, value) => /input|prompt|skill|secret|token|headers|authorization|ctx/i.test(key) ? "[omitted]" : typeof value === "string" ? value.slice(0, 300) : value);
-      detail = `${detail}; ${validation}`.replaceAll(config().key, "[redacted]").replace(/[a-f0-9]{48,}/gi, "[redacted]").replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 1500);
+      const errors = data.detail?.extra?.errors ?? data.errors;
+      if (Array.isArray(errors)) detail = errors.slice(0, 3).map((d: any) => `${Array.isArray(d?.loc) ? d.loc.join(".") : "request"}: ${typeof d?.msg === "string" ? d.msg : "Invalid value"}`).join("; ");
+      detail = detail.replaceAll(config().key, "[redacted]").replace(/[a-f0-9]{48,}/gi, "[redacted]").replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 500);
     } catch { /* A malformed error response must not obscure the HTTP status. */ }
   }
   return Object.assign(new Error(`Nimble returned HTTP ${response.status}.${detail ? ` ${detail}` : ""} ${response.status === 429 ? "Trial usage or rate limit reached; no automatic retry was started." : response.status === 401 || response.status === 403 ? "Check the configured API key." : "The saved check can be resumed."}`), response.status >= 500 ? { retryable: true } : {});

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { MONITOR_SOURCES } from "../lib/source-config";
 import { parseSource, parseMicrosoftDocument, collectSource, type Announcement } from "../lib/source-monitor";
-import { researchInput, validateResearch, readResearch } from "../lib/nimble-research";
+import { researchInput, researchSchema, validateResearch, readResearch } from "../lib/nimble-research";
 import { startScan, advanceScan, dashboardFeed } from "../lib/watchtower-pipeline";
 import { getDatabase, resetDatabase, setBatchHook } from "./d1-fixture";
 
@@ -31,6 +31,7 @@ test("Public compliance updates and unrelated AI-discovered vulnerabilities are 
   assert.equal(parseSource(source("openai"), `<script id="__NEXT_DATA__">${JSON.stringify(data)}</script>`, since, until).length, 0);
 });
 test("Research guards cardinality and preserves captured source identity", () => {
+  assert.doesNotMatch(JSON.stringify(researchSchema), /"(?:maxItems|minItems|maxLength|minLength)":/);
   assert.throws(() => researchInput("scan", "investigator", [item, item, item, item]));
   assert.throws(() => researchInput("scan", "investigator", [{ ...item, url: "https://attacker.invalid" }]));
   assert.throws(() => validateResearch({ findings: [finding, finding] }, [item]));
