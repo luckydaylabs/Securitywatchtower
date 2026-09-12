@@ -51,6 +51,7 @@ type FeedResponse = {
   history?: SnapshotHistory[];
   message?: string;
   mode?: FeedMode;
+  selectedSnapshot?: SnapshotHistory;
   stage?: PipelineStage;
   context?: PipelineContext;
   pipelineStages?: PipelineStage[];
@@ -59,6 +60,7 @@ type FeedResponse = {
 };
 
 type ActiveRun = RunReference & { context: PipelineContext };
+type HistoryStatus = "loading" | "ready" | "empty" | "error";
 
 const pipelineStages: PipelineStage[] = ["monitor", "investigator", "verifier", "orchestrator"];
 const HOURLY_MONITORING_STORAGE_KEY = "watchtower.hourly-monitoring";
@@ -135,6 +137,7 @@ export default function Home() {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [history, setHistory] = useState<SnapshotHistory[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>();
+  const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("loading");
   const [mode, setMode] = useState<FeedMode>("idle");
   const [lastChecked, setLastChecked] = useState<string>();
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
@@ -147,6 +150,7 @@ export default function Home() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const isRefreshingRef = useRef(false);
   const [error, setError] = useState<string>();
+  const [historyError, setHistoryError] = useState<string>();
   const [announcement, setAnnouncement] = useState("Preparing the monitoring check.");
 
   const loadFindings = useCallback(async (trigger: CheckTrigger = "manual") => {
@@ -171,8 +175,12 @@ export default function Home() {
 
       if (payload.mode === "live") {
         if (Array.isArray(payload.findings)) setFindings(payload.findings);
-        if (Array.isArray(payload.history)) setHistory(payload.history);
-        if (payload.history?.[0]?.id) setSelectedSnapshotId(payload.history[0].id);
+        if (Array.isArray(payload.history)) {
+          setHistory(payload.history);
+          setHistoryStatus(payload.history.length ? "ready" : "empty");
+          setHistoryError(undefined);
+        }
+        if (payload.selectedSnapshot?.id) setSelectedSnapshotId(payload.selectedSnapshot.id);
         setMode("live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setAnnouncement(payload.message ?? "Findings refreshed.");
@@ -204,6 +212,8 @@ export default function Home() {
   }, []);
 
   const loadSavedSnapshot = useCallback(async (snapshotId?: string) => {
+    setHistoryStatus("loading");
+    setHistoryError(undefined);
     setError(undefined);
 
     try {
@@ -217,12 +227,19 @@ export default function Home() {
         throw new Error(payload.message ?? "Saved check history could not be loaded.");
       }
 
-      if (Array.isArray(payload.history)) setHistory(payload.history);
+      if (Array.isArray(payload.history)) {
+        setHistory(payload.history);
+        setHistoryStatus(payload.history.length ? "ready" : "empty");
+      }
       if (Array.isArray(payload.findings)) setFindings(payload.findings);
       if (payload.mode === "live") {
         setMode("live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
-        setSelectedSnapshotId(snapshotId ?? payload.history?.[0]?.id);
+        setSelectedSnapshotId(payload.selectedSnapshot?.id ?? snapshotId ?? payload.history?.[0]?.id);
+        setSelectedPlatform("all");
+        setReviewedIds(new Set());
+        setExpandedId(null);
+        setTechnicalId(null);
       } else {
         setMode(payload.mode ?? "idle");
         setFindings([]);
@@ -230,8 +247,9 @@ export default function Home() {
         setSelectedSnapshotId(undefined);
       }
     } catch (loadError) {
+      setHistoryStatus("error");
       setMode("fallback");
-      setError(loadError instanceof Error ? loadError.message : "Saved check history could not be loaded.");
+      setHistoryError(loadError instanceof Error ? loadError.message : "Saved check history could not be loaded.");
     }
   }, []);
 
@@ -335,8 +353,12 @@ export default function Home() {
         }
 
         if (Array.isArray(payload.findings)) setFindings(payload.findings);
-        if (Array.isArray(payload.history)) setHistory(payload.history);
-        if (payload.history?.[0]?.id) setSelectedSnapshotId(payload.history[0].id);
+        if (Array.isArray(payload.history)) {
+          setHistory(payload.history);
+          setHistoryStatus(payload.history.length ? "ready" : "empty");
+          setHistoryError(undefined);
+        }
+        if (payload.selectedSnapshot?.id) setSelectedSnapshotId(payload.selectedSnapshot.id);
         setMode(payload.mode ?? "live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
         setAnnouncement(payload.message ?? "Findings refreshed.");
@@ -569,10 +591,27 @@ export default function Home() {
               <p className="section-kicker">Audit trail</p>
               <h2 id="history-title">Check history <span className="queue-count">{history.length}</span></h2>
             </div>
-            <span className="history-caption">Saved snapshots · newest first</span>
+            {selectedSnapshotId && history[0]?.id !== selectedSnapshotId ? (
+              <button type="button" className="history-latest-button" onClick={() => void loadSavedSnapshot()} disabled={isRefreshing}>
+                Return to latest
+              </button>
+            ) : (
+              <span className="history-caption">Saved snapshots · newest first</span>
+            )}
           </div>
 
-          {history.length ? (
+          {historyStatus === "loading" ? (
+            <div className="history-empty" role="status">
+              <Clock3 size={18} aria-hidden="true" />
+              <div><strong>Loading saved checks…</strong><p>Retrieving the shared audit trail.</p></div>
+            </div>
+          ) : historyStatus === "error" ? (
+            <div className="history-error" role="alert">
+              <CircleAlert size={18} aria-hidden="true" />
+              <div><strong>History unavailable.</strong><p>{historyError ?? "Saved checks could not be loaded."}</p></div>
+              <button type="button" onClick={() => void loadSavedSnapshot()}>Retry</button>
+            </div>
+          ) : history.length ? (
             <div className="history-table-wrap">
               <table className="history-table">
                 <caption className="sr-only">Saved security check snapshots</caption>
@@ -580,7 +619,7 @@ export default function Home() {
                   <tr>
                     <th scope="col">Checked</th>
                     <th scope="col">Run mode</th>
-                    <th scope="col">Announcements</th>
+                    <th scope="col">Findings</th>
                     <th scope="col">Critical</th>
                     <th scope="col">Platforms</th>
                   </tr>
@@ -596,7 +635,7 @@ export default function Home() {
                           disabled={isRefreshing}
                           aria-label={`Open saved check from ${historyTime(snapshot.checkedAt)}`}
                         >
-                          {historyTime(snapshot.checkedAt)}
+                          <time dateTime={snapshot.checkedAt}>{historyTime(snapshot.checkedAt)}</time>
                         </button>
                       </td>
                       <td><span className={`history-trigger history-trigger-${snapshot.trigger}`}>{snapshot.trigger === "automatic" ? "Hourly" : "Manual"}</span></td>

@@ -998,11 +998,13 @@ function completedResponse(
   trust?: NimbleTrust,
   checkedAt = new Date().toISOString(),
   history: SnapshotHistory[] = [],
+  selectedSnapshot?: SnapshotHistory,
 ) {
   return jsonResponse({
     checkedAt,
     findings,
     history,
+    ...(selectedSnapshot ? { selectedSnapshot } : {}),
     ...(trust ? { trust } : {}),
     message,
     mode: "live",
@@ -1045,7 +1047,7 @@ async function advancePipeline(
         "Nimble completed the source check. No actionable findings passed the monitor stage.",
         context.trigger ?? "manual",
       );
-      return completedResponse(snapshot.findings, snapshot.message, trust, snapshot.checkedAt, snapshot.history);
+      return completedResponse(snapshot.findings, snapshot.message, trust, snapshot.checkedAt, snapshot.history, snapshot);
     }
 
     const next = await startNimbleStage("investigator", investigatorInput(selectPipelineCandidates(findings)));
@@ -1110,7 +1112,7 @@ async function advancePipeline(
     "Nimble completed the monitor, investigation, verification, and orchestration pipeline.",
     context.trigger ?? "manual",
   );
-  return completedResponse(snapshot.findings, snapshot.message, trust, snapshot.checkedAt, snapshot.history);
+  return completedResponse(snapshot.findings, snapshot.message, trust, snapshot.checkedAt, snapshot.history, snapshot);
 }
 
 export async function POST(request: Request) {
@@ -1153,7 +1155,7 @@ export async function GET(request: Request) {
     if (!agentId && !runId && !stageParam) {
       const history = await readSnapshotHistory();
       const snapshot = snapshotId ? await readSnapshotById(snapshotId) : await readLatestSnapshot();
-      return snapshot ? completedResponse(snapshot.findings, snapshot.message, undefined, snapshot.checkedAt, history) : idleResponse(history);
+      return snapshot ? completedResponse(snapshot.findings, snapshot.message, undefined, snapshot.checkedAt, history, snapshot) : idleResponse(history);
     }
 
     const config = getNimbleConfig();

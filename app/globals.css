@@ -566,6 +566,15 @@ html { scroll-behavior: smooth; scroll-padding-top: 24px; }
 .history-empty > svg { flex: 0 0 auto; color: #9cab8d; }
 .history-empty strong { display: block; color: #5a674d; font-size: 13px; font-weight: 600; }
 .history-empty p { margin: 4px 0 0; color: #8d997f; font-size: 12px; line-height: 1.45; }
+.history-latest-button { padding: 6px 9px; border: 1px solid #d3ddc4; border-radius: 5px; background: #f0f4e8; color: #667c4c; font-family: var(--font-mono); font-size: 10px; }
+.history-latest-button:hover { border-color: #b6c69f; background: #e7eedb; }
+.history-error { display: flex; align-items: center; gap: 11px; padding: 13px 0 2px; color: #b54c24; }
+.history-error > div { min-width: 0; flex: 1; }
+.history-error strong { display: block; color: #764522; font-size: 13px; font-weight: 600; }
+.history-error p { margin: 4px 0 0; color: #96735a; font-size: 12px; line-height: 1.45; }
+.history-error > button { flex: 0 0 auto; padding: 6px 9px; border: 1px solid #edc6af; border-radius: 5px; background: #fff8f3; color: #a34a22; font-family: var(--font-mono); font-size: 10px; }
+.history-error > button:hover { border-color: #dca27f; background: #ffefe4; }
+.history-row-button:focus-visible, .history-latest-button:focus-visible, .history-error > button:focus-visible { outline: 3px solid rgba(72, 137, 231, 0.34); outline-offset: 3px; }
 
 @media (max-width: 640px) {
   .history-panel { padding: 17px 13px; }
