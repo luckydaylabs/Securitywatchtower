@@ -81,6 +81,26 @@ export async function startScan(trigger: CheckTrigger) {
   } finally { await release(owner); }
 }
 
+// Owner-authorized, single-use maintenance operation. Keep the receipt across resets.
+export async function resetMonitoringOnce() {
+  const owner = await claim();
+  if (!owner) throw new Error("A check is being processed; reset refused.");
+  const db = getDatabase(), receipt = "reset-2026-09-12-fresh-start";
+  try {
+    if (await db.prepare("SELECT id FROM watchtower_control WHERE id=?").bind(receipt).first()) return { reset: false, alreadyReset: true };
+    if (await activeScan()) throw new Error("An active check exists; reset refused.");
+    const tables = ["watchtower_announcements", "watchtower_snapshots", "watchtower_sources", "watchtower_scans"];
+    await db.batch([
+      assertLease(owner),
+      ...tables.map(table => db.prepare(`DELETE FROM ${table}`)),
+      db.prepare("UPDATE watchtower_control SET active_scan=NULL WHERE id='main'"),
+      db.prepare("INSERT INTO watchtower_control(id,lease_until) VALUES(?,0)").bind(receipt),
+      assertLease(owner),
+    ]);
+    return { reset: true, alreadyReset: false };
+  } finally { await release(owner); }
+}
+
 async function collect(scan: ScanRow, state: ScanState) {
   const db = getDatabase();
   // Process sources separately and persist each outcome so a later source failure cannot discard captured evidence.

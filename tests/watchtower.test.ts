@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { MONITOR_SOURCES } from "../lib/source-config";
 import { parseSource, parseMicrosoftDocument, collectSource, latestPerPlatform, fingerprint, type Announcement } from "../lib/source-monitor";
 import { researchInput, researchSchema, validateResearch, readResearch, startResearch } from "../lib/nimble-research";
-import { startScan, advanceScan, dashboardFeed } from "../lib/watchtower-pipeline";
+import { startScan, advanceScan, dashboardFeed, resetMonitoringOnce } from "../lib/watchtower-pipeline";
 import { getDatabase, resetDatabase, setBatchHook } from "./d1-fixture";
 import { platformJobs, researchBatches } from "../lib/platform-research";
 import { sourceTimestamp, formatSourceTimestamp } from "../lib/announcement-dates";
@@ -13,6 +13,19 @@ const source = (id: string) => MONITOR_SOURCES.find(s => s.id === id)!;
 const item: Announcement = { id: "ubuntu:USN-1234-1", sourceId: "ubuntu", source: "Ubuntu Security Notices", title: "Test advisory", url: "https://ubuntu.com/security/notices/USN-1234-1", sourceDate: "2026-09-11T00:00:00.000Z", platform: "linux", evidence: "Test fixture only." };
 const finding = { id: item.id, source: item.source, sourceUrl: item.url, platform: "linux", detectedAt: item.sourceDate, severity: "high", title: "Test advisory", summary: "Fixture summary", whatHappened: "Fixture evidence", whyItMatters: "Fixture impact", nextStep: "Install the vendor update", signalType: "Security update", scope: "Ubuntu", evidenceNote: "Fixture source note" };
 const originalFetch = globalThis.fetch;
+test("One-time reset refuses active checks and cannot erase subsequent data", async () => {
+  resetDatabase();
+  const db = getDatabase();
+  await startScan("manual");
+  await assert.rejects(resetMonitoringOnce(), /active check/);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM watchtower_scans").first()).n, 1);
+  await db.prepare("UPDATE watchtower_control SET active_scan=NULL WHERE id='main'").run();
+  assert.equal((await resetMonitoringOnce()).reset, true);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM watchtower_scans").first()).n, 0);
+  await startScan("manual");
+  assert.equal((await resetMonitoringOnce()).alreadyReset, true);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM watchtower_scans").first()).n, 1);
+});
 process.env.NIMBLE_API_KEY = "test-placeholder-not-a-real-key";
 
 test("Verified platform findings publish while another runs, survive reload and failures, and finalize once", async () => {
