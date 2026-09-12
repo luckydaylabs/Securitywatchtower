@@ -146,6 +146,8 @@ async function pendingLatestAnnouncements(): Promise<Candidate[]> {
   const rows = await getDatabase().prepare(`WITH versions AS (
     SELECT *, ROW_NUMBER() OVER (PARTITION BY advisory_id ORDER BY first_seen_at DESC, version_id DESC) AS version_rank
     FROM watchtower_announcements
+    WHERE source_id NOT IN ('anthropic','openai')
+      OR advisory_id LIKE 'anthropic:article:%' OR advisory_id LIKE 'openai:article:%'
   ), ranked AS (
     SELECT *, ROW_NUMBER() OVER (PARTITION BY json_extract(evidence_json,'$.platform') ORDER BY source_date DESC, advisory_id ASC) AS platform_rank
     FROM versions WHERE version_rank=1

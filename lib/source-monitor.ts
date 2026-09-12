@@ -112,43 +112,79 @@ export function parseSource(source: MonitorSource, body: string, until: string):
       add(url.split("/").pop()!, anchor[2], url, stamp, row, "macos", stamp);
     }
   } else if (source.id === "anthropic") {
-    const records = JSON.parse(body);
-    if (!Array.isArray(records)) throw new Error("Disclosure ledger has an unexpected format.");
-    for (const record of records) {
-      if (!record.revealed || !record.ant_id || record.withdrawn || record.superseded_by || record.merged_into) continue;
-      // AI-assisted discovery in unrelated software is not an AI-platform vulnerability.
-      if (!/claude|anthropic|prompt.?injection|model context protocol|\bmcp\b/i.test(`${record.project} ${record.bug_class}`)) continue;
-      add(record.ant_id, `${record.project}: ${record.bug_class}`, `https://red.anthropic.com/2026/cvd/findings/${encodeURIComponent(record.ant_id)}.html`,
-        record.revealed_at, JSON.stringify(record), "ai", record.revealed_at);
+    // Only dated article cards, never navigation links or the disclosure ledger.
+    const html = body.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+    const anchors = html.match(/<a\b[^>]*href=["'][^"']+["'][^>]*>[\s\S]*?<\/a>/gi) ?? [];
+    let datedCards = 0;
+    for (const anchor of anchors) {
+      const time = anchor.match(/<time\b([^>]*)>([\s\S]*?)<\/time>/i);
+      if (!time) continue;
+      datedCards++;
+      const href = anchor.match(/href=["']([^"']+)["']/i)?.[1];
+      if (!href) continue;
+      let url: URL;
+      try { url = new URL(href, source.url); } catch { continue; }
+      if (!["www.anthropic.com", "anthropic.com"].includes(url.hostname)) continue;
+      url.hostname = "www.anthropic.com"; url.search = ""; url.hash = "";
+      const heading = anchor.match(/<h[2-6]\b[^>]*>([\s\S]*?)<\/h[2-6]>/i)?.[1]
+        ?? anchor.match(/<span\b[^>]*class=["'][^"']*__title[^"']*["'][^>]*>([\s\S]*?)<\/span>/i)?.[1];
+      const title = plainText(heading ?? "");
+      if (!title || !isSecurityArticle(title, plainText(anchor))) continue;
+      const stamp = time[1].match(/datetime=["']([^"']+)["']/i)?.[1] ?? plainText(time[2]);
+      add(`article:${url.pathname.replace(/\/$/, "")}`, title, url.href.replace(/\/$/, ""), stamp, title + " " + (anchor.match(/<p\b[^>]*>([\s\S]*?)<\/p>/i)?.[1] ?? ""), "ai", stamp);
     }
+    if (!datedCards) throw new Error("Anthropic page did not contain readable dated article cards; coverage could not be verified.");
   } else if (source.id === "openai") {
-    const json = body.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i)?.[1];
-    if (!json) throw new Error("Public disclosure page format could not be read.");
-    const topics = JSON.parse(json).props?.pageProps?.orgInfo?.topics;
-    if (!Array.isArray(topics)) throw new Error("Public disclosure listing has an unexpected format.");
-    for (const topic of topics) {
-      if (topic.hidden) continue;
-      for (const update of list<any>(topic.updates)) {
-        const text = `${topic.subject} ${plainText(update.message ?? "")}`;
-        if (!/CVE-\d{4}-\d+|security incident|vulnerabilit|prompt.?injection/i.test(text)) continue;
-        add(String(update.id), topic.subject, source.url, update.updatedAt ?? update.createdAt, text, "ai", update.createdAt, update.updatedAt);
-      }
+    const entries = list<any>(parser.parse(body).rss?.channel?.item);
+    if (!entries.length) throw new Error("OpenAI public news feed did not contain readable articles.");
+    for (const entry of entries) {
+      const title = String(entry.title ?? ""), description = String(entry.description ?? "");
+      if (!isSecurityArticle(title, description)) continue;
+      let url: URL;
+      try { url = new URL(String(entry.link)); } catch { continue; }
+      if (!["openai.com", "www.openai.com"].includes(url.hostname)) continue;
+      url.hostname = "openai.com"; url.search = ""; url.hash = "";
+      add(`article:${url.pathname.replace(/\/$/, "")}`, title, url.href.replace(/\/$/, ""), entry.updated ?? entry.pubDate,
+        `${title} ${description}`, "ai", entry.pubDate, entry.updated);
     }
   }
   return Array.from(new Map(items.map(item => [item.id, item])).values());
 }
 
+export function isSecurityArticle(title: string, description: string): boolean {
+  // A passing mention of security in a customer story or company update is not a finding.
+  if (/\bgrant|\bboard|\bnational security\b|\$\d|expand\w*.*(?:access|partnership)/i.test(title)
+    && !/incident|vulnerabilit|prompt.?injection|misuse/i.test(title)) return false;
+  const direct = /incident|vulnerabilit|prompt.?injection|jailbreak|cyber|threat|malicious|misuse|espionage|sandbox|breach|security|defender/i;
+  const context = /incident|vulnerabilit|prompt.?injection|jailbreak|cyber|malicious|unauthorized|sandbox|breach/i;
+  return direct.test(title) || (/research|safety|safeguard|alignment/i.test(title) && context.test(description));
+}
+
 export async function collectSource(source: MonitorSource, checkpoint: SourceCheckpoint, until: string): Promise<SourceResult> {
   if (source.id === "msrc") return collectMicrosoftCsaf(checkpoint, until);
+  if (source.id === "anthropic") {
+    const results = await Promise.allSettled([source.url, ...source.additionalPages.map(page => page.url)].map(async url => {
+      const response = await fetchSource(url);
+      if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}.`);
+      return parseSource(source, await boundedText(response), until);
+    }));
+    const items = latestPerPlatform(results.flatMap(result => result.status === "fulfilled" ? result.value : []));
+    const failures = results.filter(result => result.status === "rejected");
+    if (failures.length === results.length) throw new Error("Anthropic News and Threat Intelligence could not be read.");
+    const warning = failures.length ? "One Anthropic listing could not be read; coverage is incomplete." : undefined;
+    // Fetch both small listings every check; deduplicated article fingerprints prevent paid re-research.
+    return { items, etag: null, lastModified: null, unchanged: false, warning,
+      documentsJson: JSON.stringify({ policy: "public-ai-articles-v1", items, warning }) };
+  }
   // Old checkpoints contain only a date window, not the full latest-five selection.
   // Ignore their validators once so older announcements are actually retrieved.
   const stored = checkpoint.documents_json ? JSON.parse(checkpoint.documents_json) : null;
-  const policy = "latest-five-dates-v2";
+  const policy = source.id === "openai" ? "public-ai-articles-v1" : "latest-five-dates-v2";
   const cached = stored?.policy === policy && Array.isArray(stored.items) ? stored : null;
   const headers: Record<string, string> = {};
   if (cached && checkpoint.etag) headers["If-None-Match"] = checkpoint.etag;
   if (cached && checkpoint.last_modified) headers["If-Modified-Since"] = checkpoint.last_modified;
-  const response = await fetchSource(source.url, headers);
+  const response = await fetchSource("feedUrl" in source ? source.feedUrl : source.url, headers);
   if (response.status === 304 && cached) return { items: cached.items, etag: checkpoint.etag ?? null, lastModified: checkpoint.last_modified ?? null, unchanged: true, warning: cached.warning, documentsJson: checkpoint.documents_json! };
   if (!response.ok) throw new Error(`Source returned HTTP ${response.status}.`);
   const body = await boundedText(response);

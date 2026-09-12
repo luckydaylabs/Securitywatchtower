@@ -98,6 +98,27 @@ test("Apple investigator and verifier must read full release pages without a sup
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test("AI investigator and verifier use public reports and distinguish research from vulnerabilities", async () => {
+  const ai = { ...item, sourceId: "openai", platform: "ai" as const, id: "openai:article:/index/incident", url: "https://openai.com/index/incident" };
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    const body = JSON.parse(String(init?.body));
+    assert.match(body.sources.prioritize, /Security incident, or Security research/);
+    assert.match(body.sources.prioritize, /even without a CVE/);
+    assert.match(body.sources.prioritize, /verifier must independently check/);
+    assert.match(body.sources.prioritize, /preparedness rating is not vulnerability severity/);
+    assert.ok(body.sources.block[0].domains.includes("trust.openai.com"));
+    assert.ok(body.sources.allow[0].domains.includes("www-cdn.anthropic.com"));
+    return Response.json({ id: "test-run", agent_id: "test-agent" });
+  };
+  try {
+    await startResearch("ai-test", "investigator", [ai], undefined, "ai");
+    await startResearch("ai-test", "verifier", [ai], undefined, "ai");
+    assert.equal(calls, 2);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("Windows verification retains valid structured severity evidence and official document URL", () => {
   const windows = { ...item, id: "msrc:CVE-2026-1234", sourceId: "msrc", platform: "windows" as const,
     url: "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-1234",
@@ -189,10 +210,41 @@ test("Microsoft dates and platform come from individual advisories, not the mont
   assert.deepEqual(items.map(i => i.id), ["msrc:CVE-2026-1234", "msrc:CVE-2020-1234"]);
   assert.equal(items[1].sourceDate, "2020-01-01T00:00:00.000Z");
 });
-test("Public compliance updates and unrelated AI-discovered vulnerabilities are excluded", () => {
-  assert.equal(parseSource(source("anthropic"), JSON.stringify([{ revealed: true, ant_id: "a1", project: "GraphicsMagick", bug_class: "overflow", revealed_at: "2026-09-11" }]), until).length, 0);
-  const data = { props: { pageProps: { orgInfo: { topics: [{ subject: "SOC2 report", updates: [{ id: "a", createdAt: "2026-09-11", message: "Compliance report" }] }] } } } };
-  assert.equal(parseSource(source("openai"), `<script id="__NEXT_DATA__">${JSON.stringify(data)}</script>`, until).length, 0);
+test("Public AI articles include incidents and research without CVEs, excluding unrelated news", () => {
+  const rss = `<rss><channel>${[
+    ["The Hugging Face incident and the road ahead", "incident", "Security incident report"],
+    ["Understanding prompt injections", "research", "Research findings"],
+    ["Customer productivity improvements", "customer", "Maintaining rigorous security policies"],
+    ["Expanding AI access and cyber defense", "marketing", "Access to products"],
+    ["Grants for security research", "grant", "Funding opportunity"],
+  ].map(([title, slug, description]) => `<item><title>${title}</title><link>https://openai.com/index/${slug}</link><description>${description}</description><pubDate>Fri, 11 Sep 2026 10:30:00 GMT</pubDate></item>`).join("")}</channel></rss>`;
+  const items = parseSource(source("openai"), rss, until);
+  assert.deepEqual(items.map(i => i.id), ["openai:article:/index/incident", "openai:article:/index/research"]);
+  assert.equal(items[0].publishedAt?.precision, "second");
+  const html = `<a href="/news/security-incident"><time>Aug 31, 2026</time><h4>Investigating security incidents</h4></a>
+    <a href="/news/security-incident"><time>Aug 31, 2026</time><span class="PublicationList__title">Investigating security incidents</span></a>
+    <a href="https://www.anthropic.com/threat-intelligence-report"><h2>Detecting misuse of AI</h2><a href="/threat-intelligence-report"><time>Sep 10, 2026</time><p>Threat report</p></a></a>
+    <a href="https://trust.anthropic.com/"><time>Sep 11, 2026</time><h4>Security compliance</h4></a>
+    <a href="/news/future-security"><time>Sep 20, 2026</time><h4>Security research</h4></a>`;
+  const articles = parseSource(source("anthropic"), html, until);
+  assert.equal(articles.length, 2);
+  assert.equal(articles[0].publishedAt?.precision, "date");
+  assert.equal(articles[1].url, "https://www.anthropic.com/threat-intelligence-report");
+  assert.throws(() => parseSource(source("anthropic"), "<html>Sign in</html>", until), /coverage/);
+  assert.throws(() => parseSource(source("openai"), "<html>Sign in</html>", until), /feed/);
+});
+test("Anthropic merges both public listings and retains successful coverage if one fails", async () => {
+  const html = '<a href="/news/security-incident"><time>Sep 10, 2026</time><h4>Security incident report</h4></a>';
+  try {
+    globalThis.fetch = async () => new Response(html);
+    const result = await collectSource(source("anthropic"), {}, until);
+    assert.equal(result.items.length, 1);
+    assert.equal(result.warning, undefined);
+    globalThis.fetch = async url => new Response(String(url).endsWith("/news") ? html : "Unavailable", { status: String(url).endsWith("/news") ? 200 : 503 });
+    const partial = await collectSource(source("anthropic"), {}, until);
+    assert.equal(partial.items.length, 1);
+    assert.match(partial.warning!, /incomplete/);
+  } finally { globalThis.fetch = originalFetch; }
 });
 test("Research guards cardinality and preserves captured source identity", () => {
   assert.doesNotMatch(JSON.stringify(researchSchema), /"(?:maxItems|minItems|maxLength|minLength)":/);
@@ -206,6 +258,31 @@ test("Research guards cardinality and preserves captured source identity", () =>
   assert.equal(validateResearch({ output: { type: "json", content: { findings: [{ ...finding, platform: "ai" }] } } }, [item])[0].platform, "linux");
   assert.equal(validateResearch({ findings: [{ ...finding, id: "USN-1234-1" }] }, [item])[0].id, item.id);
   assert.throws(() => validateResearch({ findings: [{ ...finding, id: "unrelated", sourceUrl: "https://ubuntu.com/security/notices/unrelated" }] }, [item]), /unknown announcement/);
+});
+
+test("Retired AI discovery records stay stored without occupying the new research selection", async () => {
+  resetDatabase();
+  const db = getDatabase();
+  for (const id of ["openai:old-trust-update", "anthropic:old-ledger", "openai:article:/index/security-incident"]) {
+    const candidate = { ...item, id, sourceId: id.split(":")[0], platform: "ai", url: "https://openai.com/index/security-incident" };
+    await db.prepare("INSERT INTO watchtower_announcements(version_id,advisory_id,source_id,content_hash,source_date,first_seen_at,evidence_json,review_status) VALUES(?,?,?,?,?,?,?,?)")
+      .bind(id, id, candidate.sourceId, id, until, since, JSON.stringify(candidate), "pending").run();
+  }
+  assert.equal((await dashboardFeed()).pendingCount, 1);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM watchtower_announcements").first()).n, 3);
+});
+
+test("OpenAI changes invalidate Trust Portal checkpoints and request only the public RSS feed", async () => {
+  try {
+    globalThis.fetch = async (url, init) => {
+      assert.equal(String(url), "https://openai.com/news/rss.xml");
+      assert.equal((init?.headers as Record<string, string>)["If-None-Match"], undefined);
+      return new Response('<rss><channel><item><title>Security incident</title><link>https://openai.com/index/incident</link><pubDate>2026-09-11</pubDate></item></channel></rss>');
+    };
+    const result = await collectSource(source("openai"), { etag: "portal", documents_json: JSON.stringify({ policy: "latest-five-dates-v2", items: [] }) }, until);
+    assert.equal(result.items.length, 1);
+    assert.equal(JSON.parse(result.documentsJson!).policy, "public-ai-articles-v1");
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test("CSAF discovery selects five Windows advisories and reuses unchanged documents", async () => {

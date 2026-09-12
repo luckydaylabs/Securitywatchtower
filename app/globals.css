@@ -376,7 +376,8 @@ h2 { margin-bottom: 0; font-size: 25px; font-weight: 760; letter-spacing: -0.035
 .topbar { background: var(--canvas); color: var(--ink); border-bottom: 1px solid var(--line); }
 .topbar-inner { width: auto; margin: 0 32px; min-height: 79px; gap: 20px; }
 .brand-mark { display: none; }
-.brand-copy { display: grid; gap: 4px; }
+.brand-copy { display: grid; gap: 4px; min-width: 0; }
+.brand-subtitle { margin: 0; max-width: 28rem; font-size: .875rem; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
 .brand-name { font-size: 14px; font-weight: 800; letter-spacing: .07em; }
 .brand-slash { padding: 0 16px; color: #aaa99f; font-weight: 400; }
 .brand-section { font-size: 13px; font-weight: 450; letter-spacing: 0; color: var(--muted); }
@@ -638,8 +639,6 @@ html { scroll-behavior: smooth; scroll-padding-top: 24px; }
 /* Unknown severity is separate from low risk; partial checks retain visible results. */
 .severity-unknown { background: #92979c; }
 .severity-chip-unknown, .ticker-severity-unknown { background: #e8eaec; color: #41484f; }
-.partial-check-notice { margin: 16px 0; padding: 16px 20px; border: 1px solid #d6aa7d; border-radius: 8px; background: #fff4e8; color: #624225; }
-.partial-check-notice p { margin: 6px 0 0; font-size: 14px; line-height: 1.5; }
 .topbar-status-group { margin-left: auto; min-width: 0; max-width: 440px; }
 .topbar-status-group .topbar-status { margin-left: 0; flex-wrap: wrap; row-gap: 4px; }
 .topbar-status-note { margin: 5px 0 0; color: #805c2f; font-size: 12px; line-height: 1.4; }
@@ -654,3 +653,47 @@ html { scroll-behavior: smooth; scroll-padding-top: 24px; }
 }
 .vulnerability-ticker-partial .ticker-status { color: #805c2f; }
 .vulnerability-ticker-partial .ticker-status-dot { background: #b88242; }
+
+/* Keep requested navigation and section labels readable at every breakpoint. */
+.brand-name { font-size: 1.5rem; line-height: 1.4; }
+.brand-section { font-size: 1rem; }
+.brand-slash { padding: 0 10px; }
+.brand-scope { font-size: .875rem; line-height: 1.5; letter-spacing: 0; flex-wrap: wrap; }
+.brand-scope svg { width: 15px; height: 15px; }
+.analytics-context, .queue-context { font-size: 1rem; line-height: 1.5; flex-wrap: wrap; }
+.analytics-context > span:first-child, .queue-context > span { font-size: 1.125rem; font-weight: 600; }
+.analytics-context > span:last-child { font-size: .875rem; color: #717968; }
+.analytics-context > span, .queue-context > span { min-width: 0; overflow-wrap: anywhere; }
+.queue-context button { font-size: .875rem; flex-shrink: 0; padding: 7px 9px; }
+.queue-context button svg { flex-shrink: 0; }
+.topbar-status-group { text-align: right; }
+.topbar-status-group .topbar-status { display: flex; justify-content: flex-end; font-size: .875rem; }
+.topbar-status-group .topbar-status span:last-child { display: inline; }
+.monitoring-controls .monitoring-toggle-copy { display: inline-grid; }
+.monitoring-toggle-label, .monitoring-toggle-state { font-size: .75rem; }
+.topbar-status-note { overflow-wrap: anywhere; }
+@media (min-width: 641px) {
+  .topbar .topbar-inner { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px 24px; padding: 16px 0; align-items: start; }
+  .topbar .brand-lockup, .topbar .brand-copy { display: contents; }
+  .topbar .brand-name { grid-column: 1; grid-row: 1; align-self: center; }
+  .topbar .brand-subtitle { grid-column: 1; grid-row: 2; max-width: none; }
+  .topbar .brand-scope { grid-column: 1; grid-row: 3; }
+  .topbar .monitoring-controls { grid-column: 2; grid-row: 1; justify-self: end; margin-left: 0; }
+  .topbar .topbar-status-group, .topbar .topbar-status-group.has-notice { grid-column: 2; grid-row: 2 / 4; width: 100%; max-width: none; margin: 0; padding: 0; }
+}
+@media (max-width: 1100px) {
+  .topbar-inner { flex-wrap: wrap; padding: 14px 0; gap: 12px 20px; }
+  .brand-name { display: flex; flex-wrap: wrap; align-items: baseline; }
+  .brand-section, .brand-slash { display: inline; }
+  .monitoring-controls { margin-left: auto; }
+  .topbar-status-group, .topbar-status-group.has-notice { order: 3; width: 100%; max-width: none; margin-left: 0; padding: 0; }
+  .topbar-status-group .topbar-status .topbar-divider { display: inline-block; }
+}
+@media (max-width: 640px) {
+  .brand-lockup { flex-shrink: 1; min-width: 0; }
+  .brand-name { font-size: 1.5rem; }
+  .brand-scope { font-size: .875rem; }
+  .analytics-context, .queue-context { font-size: 1rem; }
+  .topbar-status-group.has-notice .topbar-status { font-size: .875rem; }
+  .monitoring-controls { flex-wrap: wrap; }
+}

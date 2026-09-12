@@ -11,6 +11,7 @@ import {
   CircleAlert,
   Clock3,
   ExternalLink,
+  Eye,
   LayoutDashboard,
   Layers3,
   Radar,
@@ -554,12 +555,13 @@ export default function Home() {
               <Radar size={20} strokeWidth={2.2} />
             </div>
             <div className="brand-copy">
-              <p className="brand-name">WATCHTOWER<span className="brand-slash">/</span><span className="brand-section">Security operations</span></p>
+              <p className="brand-name">WATCHTOWER</p>
+              <p className="brand-subtitle">Get automatic notifications of security vulnerabilities across multiple platforms simultaneously.</p>
               <span className="brand-scope"><ScanLine size={13} aria-hidden="true" />macOS · Windows · Linux · AI</span>
             </div>
           </div>
 
-          <div className={`topbar-status-group${mode === "partial" ? " has-notice" : ""}`} aria-label="Monitoring status">
+          <div className={`topbar-status-group${mode === "partial" || mode === "fallback" ? " has-notice" : ""}`} aria-label="Monitoring status">
           <div className="topbar-status">
             <span className="status-dot" aria-hidden="true" />
             <span>{monitoringStatus}</span>
@@ -567,13 +569,14 @@ export default function Home() {
             <span>Last checked {formatCheckedAt(lastChecked)}</span>
           </div>
           {mode === "partial" && <p className="topbar-status-note" role="status">Verified announcements saved. Some platforms could not finish; see Sources for details. Another check may use additional agent runs.</p>}
+          {mode === "fallback" && <p className="topbar-status-note" role="alert">{error ?? (findings.length ? "The check could not finish. Previously loaded findings remain visible." : "Results could not be loaded. Check the connection or try again.")}</p>}
           </div>
 
           <div className="monitoring-controls">
             <div className="monitoring-toggle">
               <span className="monitoring-toggle-copy">
                 <span className="monitoring-toggle-label">Hourly checks</span>
-                <span className="monitoring-toggle-state">{hourlyMonitoringEnabled === null ? "Loading" : hourlyMonitoringEnabled ? "On · while open" : "Off · manual"}</span>
+                <span className="monitoring-toggle-state">{hourlyMonitoringEnabled === null ? "Loading" : hourlyMonitoringEnabled ? "On · while open" : "Off"}</span>
               </span>
               <button
                 className={`monitoring-switch ${hourlyMonitoringEnabled ? "monitoring-switch-on" : ""}`}
@@ -597,7 +600,7 @@ export default function Home() {
             >
               <span className="refresh-button-copy">
                 <RefreshCw size={16} className={isRefreshing ? "spin" : ""} aria-hidden="true" />
-                <span>{isRefreshing ? `${checkTrigger === "manual" ? "Manual" : "Hourly"} check` : mode === "partial" ? "Check partially completed" : mode === "fallback" ? "Check needs attention" : hourlyMonitoringEnabled === false ? "Run manual check" : "Run check"}</span>
+                <span>Manual check</span>
               </span>
               {isRefreshing ? (
                 <span
@@ -624,7 +627,6 @@ export default function Home() {
           onSelectFinding={focusFinding}
         />
 
-        {mode === "fallback" && <div className="partial-check-notice" role="alert"><strong>Check needs attention</strong><p>{error ?? "The check could not finish. Saved findings remain available."}</p></div>}
         <section className="metrics-grid" aria-label="Current feed overview">
           <div className="metric-card"><div className="metric-heading"><span>Open findings</span><ShieldCheck size={17}/></div><div className="metric-value-row"><strong>{String(openCount).padStart(2, "0")}</strong><div className="metric-mini-bars" aria-hidden="true">{platformOrder.map(platform => <i key={platform} style={{ height: `${5 + countFor(platform) / Math.max(1, openCount) * 38}px` }}/>)}</div></div><div className="metric-caption">Across all platforms<span>{findings.length} in current feed</span></div></div>
           <div className="metric-card metric-critical"><div className="metric-heading"><span>Critical alerts</span><TriangleAlert size={17}/></div><div className="metric-value-row"><strong>{String(criticalCount).padStart(2, "0")}</strong><span className="critical-marker" aria-hidden="true"><CircleAlert size={30} strokeWidth={1.25}/></span></div><div className="metric-caption">{criticalCount ? "Priority review required" : "No critical findings open"}<span className="critical-tag">P1</span></div></div>
@@ -635,7 +637,7 @@ export default function Home() {
         <div className="analytics-context"><span>Security Announcements History</span><span>{selectedPlatform === "all" ? "All platforms" : PLATFORM_META[selectedPlatform].label} · {mode === "partial" ? "Partial results" : mode === "live" ? "Latest results" : mode === "pending" ? "Awaiting results" : "No completed data"}</span></div>
         <ThreatAnalytics findings={scopeFindings} checkedAt={lastChecked}/>
 
-        <div className="queue-context"><span>Platforms Monitored</span><button type="button" onClick={() => setSelectedPlatform("all")} aria-pressed={selectedPlatform === "all"}>All platforms <ArrowUpRight size={13}/></button></div>
+        <div className="queue-context"><span>Platforms Monitored</span><button type="button" onClick={() => setSelectedPlatform("all")} aria-pressed={selectedPlatform === "all"}>All platforms <Eye size={16} aria-hidden="true"/></button></div>
 
         <section className="platform-grid" aria-label="Monitoring scopes">
           {platformOrder.map((platform) => {
@@ -822,9 +824,9 @@ export default function Home() {
         </section>
 
         <aside className="sources-panel" id="sources" aria-labelledby="sources-title">
-          <div className="sources-heading"><Radio size={17}/><h2 id="sources-title">Sources</h2><span>{SOURCE_CATALOG.length}</span></div>
-          <p className="sources-description">Authoritative advisories used by the research agent.</p>
-          <div className="source-cards">{SOURCE_CATALOG.map((source, index) => <a key={source.name} href={source.url} target="_blank" rel="noopener noreferrer"><span className="source-number">0{index + 1}</span><span>{source.name}</span><ExternalLink size={13}/></a>)}</div>
+          <div className="sources-heading"><Radio size={17}/><h2 id="sources-title">Sources</h2><span>{SOURCE_CATALOG.reduce((count, source) => count + 1 + ("additionalPages" in source ? source.additionalPages.length : 0), 0)}</span></div>
+          <p className="sources-description">Official security announcements, incident reports, and research.</p>
+          <div className="source-cards">{SOURCE_CATALOG.flatMap(source => [source, ...("additionalPages" in source ? source.additionalPages : [])]).map((source, index) => <a key={source.url} href={source.url} target="_blank" rel="noopener noreferrer"><span className="source-number">0{index + 1}</span><span>{source.name}</span><ExternalLink size={13}/></a>)}</div>
           {trust ? (
             <section className="trust-panel" aria-labelledby="trust-title">
               <div className="trust-heading">
@@ -876,7 +878,6 @@ export default function Home() {
         <section className="history-panel" aria-labelledby="history-title">
           <div className="section-heading history-heading">
             <div>
-              <p className="section-kicker">Audit trail</p>
               <h2 id="history-title">Check history <span className="queue-count">{history.length}</span></h2>
             </div>
             {selectedSnapshotId && history[0]?.id !== selectedSnapshotId ? (
