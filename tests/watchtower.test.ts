@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { MONITOR_SOURCES } from "../lib/source-config";
-import { parseSource, parseMicrosoftDocument, collectSource, type Announcement } from "../lib/source-monitor";
+import { parseSource, parseMicrosoftDocument, collectSource, latestPerPlatform, type Announcement } from "../lib/source-monitor";
 import { researchInput, researchSchema, validateResearch, readResearch } from "../lib/nimble-research";
 import { startScan, advanceScan, dashboardFeed } from "../lib/watchtower-pipeline";
 import { getDatabase, resetDatabase, setBatchHook } from "./d1-fixture";
@@ -14,9 +14,9 @@ const finding = { id: item.id, source: item.source, sourceUrl: item.url, platfor
 const originalFetch = globalThis.fetch;
 process.env.NIMBLE_API_KEY = "test-placeholder-not-a-real-key";
 
-test("RSS object GUIDs remain distinct; old notices are excluded", () => {
+test("RSS object GUIDs remain distinct; older notices stay eligible without a date cutoff", () => {
   const body = `<rss><channel>${[1, 2].map(n => `<item><guid isPermaLink="false">USN-${n}</guid><title>Notice ${n}</title><link>https://ubuntu.com/security/notices/USN-${n}</link><pubDate>Fri, 11 Sep 2026 00:00:00 GMT</pubDate></item>`).join("")}<item><title>Old</title><link>https://ubuntu.com/security/notices/old</link><pubDate>2020-01-01</pubDate></item></channel></rss>`;
-  assert.deepEqual(parseSource(source("ubuntu"), body, since, until).map(i => i.id), ["ubuntu:USN-1", "ubuntu:USN-2"]);
+  assert.deepEqual(parseSource(source("ubuntu"), body, until).map(i => i.id), ["ubuntu:USN-1", "ubuntu:USN-2", "ubuntu:old"]);
 });
 test("Microsoft dates and platform come from individual advisories, not the monthly revision", () => {
   const body = JSON.stringify({ ProductTree: { FullProductName: [{ ProductID: "1", Value: "Windows 11" }, { ProductID: "2", Value: "Office" }] }, Vulnerability: [
@@ -24,12 +24,14 @@ test("Microsoft dates and platform come from individual advisories, not the mont
     { CVE: "CVE-2020-1234", ProductStatuses: [{ ProductID: ["1"] }], RevisionHistory: [{ Date: "2020-01-01" }, { Date: "2026-09-11", Description: { Value: "Acknowledgement updated" } }] },
     { CVE: "CVE-2026-9999", ProductStatuses: [{ ProductID: ["2"] }], RevisionHistory: [{ Date: "2026-09-11" }] },
   ] });
-  assert.deepEqual(parseMicrosoftDocument(body, since, until).map(i => i.id), ["msrc:CVE-2026-1234"]);
+  const items = parseMicrosoftDocument(body, until);
+  assert.deepEqual(items.map(i => i.id), ["msrc:CVE-2026-1234", "msrc:CVE-2020-1234"]);
+  assert.equal(items[1].sourceDate, "2020-01-01T00:00:00.000Z");
 });
 test("Public compliance updates and unrelated AI-discovered vulnerabilities are excluded", () => {
-  assert.equal(parseSource(source("anthropic"), JSON.stringify([{ revealed: true, ant_id: "a1", project: "GraphicsMagick", bug_class: "overflow", revealed_at: "2026-09-11" }]), since, until).length, 0);
+  assert.equal(parseSource(source("anthropic"), JSON.stringify([{ revealed: true, ant_id: "a1", project: "GraphicsMagick", bug_class: "overflow", revealed_at: "2026-09-11" }]), until).length, 0);
   const data = { props: { pageProps: { orgInfo: { topics: [{ subject: "SOC2 report", updates: [{ id: "a", createdAt: "2026-09-11", message: "Compliance report" }] }] } } } };
-  assert.equal(parseSource(source("openai"), `<script id="__NEXT_DATA__">${JSON.stringify(data)}</script>`, since, until).length, 0);
+  assert.equal(parseSource(source("openai"), `<script id="__NEXT_DATA__">${JSON.stringify(data)}</script>`, until).length, 0);
 });
 test("Research guards cardinality and preserves captured source identity", () => {
   assert.doesNotMatch(JSON.stringify(researchSchema), /"(?:maxItems|minItems|maxLength|minLength)":/);
@@ -46,22 +48,27 @@ test("Research guards cardinality and preserves captured source identity", () =>
 });
 
 test("Current Microsoft documents precede recently edited historical releases", async () => {
-  const document = (id: string) => ({ ...item, id: `msrc:${id}`, sourceId: "msrc", url: `https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/${id}`, windowStart: since, windowEnd: until });
   const urls: string[] = [];
-  globalThis.fetch = async (url: any) => { urls.push(String(url)); return String(url).endsWith("updates") ? new Response(null, { status: 304 }) : Response.json({ Vulnerability: [], ProductTree: {} }); };
+  globalThis.fetch = async (url: any) => {
+    urls.push(String(url));
+    return String(url).endsWith("updates")
+      ? Response.json({ value: ["2016-Jul", "2026-Sep"].map(ID => ({ ID, CurrentReleaseDate: "2026-09-11" })) })
+      : Response.json({ ProductTree: { FullProductName: [{ ProductID: "1", Value: "Windows 11" }] },
+        Vulnerability: Array.from({ length: 8 }, (_, n) => ({ CVE: `CVE-2026-${1000 + n}`, ProductStatuses: [{ ProductID: ["1"] }], RevisionHistory: [{ Date: `2026-09-0${n + 1}` }] })) });
+  };
   try {
-    const result = await collectSource(source("msrc"), { etag: "v1", documents_json: JSON.stringify({ done: [], pending: [document("2016-Jul"), document("2026-Sep")] }) }, since, until);
+    const result = await collectSource(source("msrc"), { etag: "v1", documents_json: JSON.stringify({ done: [], pending: [] }) }, until);
     assert.match(urls[1], /2026-Sep$/);
-    assert.equal(JSON.parse(result.documentsJson!).pending[0].id, "msrc:2016-Jul");
+    assert.equal(urls.length, 2);
+    assert.equal(result.items.length, 5);
+    assert.equal(result.items[0].id, "msrc:CVE-2026-1007");
   } finally { globalThis.fetch = originalFetch; }
 });
 
-test("Four platform lanes dispatch concurrently, verify every record, and persist after refresh", async () => {
+test("Four five-announcement platform lanes dispatch concurrently and persist all twenty records", async () => {
   resetDatabase();
-  const candidates = [
-    ...Array.from({ length: 7 }, (_, n) => ({ ...item, id: `ubuntu:USN-${n}`, url: `https://ubuntu.com/security/notices/USN-${n}`, versionId: `linux-${n}` })),
-    ...(["macos", "windows", "ai"] as const).map(platform => ({ ...item, platform, id: `${platform}:fixture`, versionId: platform })),
-  ];
+  const candidates = (["macos", "windows", "linux", "ai"] as const).flatMap(platform =>
+    Array.from({ length: 5 }, (_, n) => ({ ...item, platform, id: `${platform}:fixture-${n}`, url: `${item.url}-${platform}-${n}`, versionId: `${platform}-${n}` })));
   const db = getDatabase(), scan: any = await startScan("manual");
   for (const c of candidates) await db.prepare("INSERT INTO watchtower_announcements(version_id,advisory_id,source_id,content_hash,source_date,first_seen_at,evidence_json,review_status) VALUES(?,?,?,?,?,?,?,?)")
     .bind(c.versionId, c.id, c.sourceId, c.versionId, c.sourceDate, until, JSON.stringify(c), "pending").run();
@@ -84,22 +91,66 @@ test("Four platform lanes dispatch concurrently, verify every record, and persis
     let result: any;
     for (let n = 0; n < 40; n++) { tick += 20000; result = await advanceScan(scan.runId); if (result.status === "completed") break; }
     assert.equal(result.status, "completed");
-    assert.equal(result.findings.length, 10); assert.equal(posts, 8); assert.equal(peak, 4);
+    assert.equal(result.findings.length, 20); assert.equal(posts, 8); assert.equal(peak, 4);
     assert.equal(result.platformReports.length, 4);
-    assert.equal((await dashboardFeed()).findings.length, 10);
+    assert.equal((await dashboardFeed()).findings.length, 20);
     assert.equal((await advanceScan(scan.runId)).history.length, 1); assert.equal(posts, 8);
     const state = JSON.parse((await db.prepare("SELECT state_json FROM watchtower_scans WHERE id=?").bind(scan.runId).first()).state_json);
     assert.equal(state.jobs.flatMap((j: any) => j.outputs ?? []).length, 8);
   } finally { globalThis.fetch = originalFetch; Date.now = originalNow; }
 });
-test("Document queue drains on 304 without fetching the index again", async () => {
-  const document = { ...item, id: "msrc:2026-Sep", sourceId: "msrc", url: "https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/2026-Sep", windowStart: since, windowEnd: until };
-  globalThis.fetch = async (url: any) => String(url).endsWith("updates") ? new Response(null, { status: 304 }) : Response.json({ Vulnerability: [], ProductTree: {} });
+test("Latest-five cache retains selected announcements on 304", async () => {
+  globalThis.fetch = async (_url: any, init?: any) => {
+    assert.equal(init.headers["If-None-Match"], "v1");
+    return new Response(null, { status: 304 });
+  };
   try {
-    const result = await collectSource(source("msrc"), { etag: "v1", documents_json: JSON.stringify({ done: [], pending: [document] }) }, since, until);
-    assert.equal(JSON.parse(result.documentsJson!).pending.length, 0);
-    assert.equal(JSON.parse(result.documentsJson!).done.length, 1);
+    const result = await collectSource(source("ubuntu"), { etag: "v1", documents_json: JSON.stringify({ policy: "latest-five-v1", items: [item] }) }, until);
+    assert.deepEqual(result.items, [item]);
+    assert.equal(result.unchanged, true);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test("Apple ignores old checkpoints and selects five August announcements without an age filter", async () => {
+  globalThis.fetch = async (_url: any, init?: any) => {
+    assert.equal(init.headers["If-None-Match"], undefined);
+    assert.equal(init.headers["If-Modified-Since"], undefined);
+    return new Response(`<table>${[1, 3, 2, 4, 6, 5].map(n => `<tr><td><a href="/en-us/10010${n}">macOS Tahoe ${n}</a></td><td>${n} August 2026</td></tr>`).join("")}</table>`);
+  };
+  try {
+    const result = await collectSource(source("apple"), { etag: "old", last_modified: until, succeeded_at: until }, until);
+    assert.deepEqual(result.items.map(i => i.title), [6, 5, 4, 3, 2].map(n => `macOS Tahoe ${n}`));
+    assert.equal(result.warning, undefined);
+    assert.match(researchInput("august", "investigator", result.items), /no date cutoff/);
+    assert.match(researchInput("august", "verifier", result.items), /no date cutoff/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("Latest-five selection merges both AI sources and keeps other platforms independent", () => {
+  const items = (["macos", "windows", "linux", "ai"] as const).flatMap(platform => Array.from({ length: 7 }, (_, n) => ({
+    ...item, id: `${platform}:${n}`, platform, sourceId: platform === "ai" ? n % 2 ? "openai" : "anthropic" : item.sourceId,
+    sourceDate: `2026-08-0${n + 1}T00:00:00.000Z`,
+  })));
+  const selected = latestPerPlatform([...items, items[0]]);
+  assert.equal(selected.length, 20);
+  for (const platform of ["macos", "windows", "linux", "ai"]) {
+    assert.deepEqual(selected.filter(i => i.platform === platform).map(i => i.id), [6, 5, 4, 3, 2].map(n => `${platform}:${n}`));
+  }
+});
+
+test("Saved latest-five records prevent backfilling older pending records; changed versions remain eligible", async () => {
+  resetDatabase();
+  const db = getDatabase();
+  for (const platform of ["macos", "windows", "linux", "ai"] as const) for (let n = 1; n <= 7; n++) {
+    const candidate = { ...item, id: `${platform}:${n}`, platform, sourceDate: `2026-08-0${n}T00:00:00.000Z` };
+    await db.prepare("INSERT INTO watchtower_announcements(version_id,advisory_id,source_id,content_hash,source_date,first_seen_at,evidence_json,review_status) VALUES(?,?,?,?,?,?,?,?)")
+      .bind(candidate.id, candidate.id, candidate.sourceId, candidate.id, candidate.sourceDate, since, JSON.stringify(candidate), n >= 3 ? "accepted" : "pending").run();
+  }
+  assert.equal((await dashboardFeed()).pendingCount, 0);
+  const changed = { ...item, id: "macos:7", platform: "macos", sourceDate: "2026-08-07T00:00:00.000Z", evidence: "Revised affected versions" };
+  await db.prepare("INSERT INTO watchtower_announcements(version_id,advisory_id,source_id,content_hash,source_date,first_seen_at,evidence_json,review_status) VALUES(?,?,?,?,?,?,?,?)")
+    .bind("macos:7:changed", changed.id, changed.sourceId, "new-hash", changed.sourceDate, until, JSON.stringify(changed), "pending").run();
+  assert.equal((await dashboardFeed()).pendingCount, 1);
 });
 test("Result 409 stays pending; unknown provider status is explicit", async () => {
   globalThis.fetch = async (url: any) => String(url).endsWith("result") ? new Response(null, { status: 409 }) : Response.json({ status: "completed" });

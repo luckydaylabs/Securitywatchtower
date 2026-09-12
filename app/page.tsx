@@ -824,7 +824,8 @@ export default function Home() {
           <div className="source-cards">{SOURCE_CATALOG.map((source, index) => <a key={source.name} href={source.url} target="_blank" rel="noopener noreferrer"><span className="source-number">0{index + 1}</span><span>{source.name}</span><ExternalLink size={13}/></a>)}</div>
           <p className="source-note">Agent runs this check: {researchUsage.used}/{researchUsage.budget}. Unchanged announcements are not researched again.</p>
           {platformReports.filter(report => report.status === "partial").map(report => <p className="source-note" key={report.platform}>{PLATFORM_META[report.platform].label}: {report.message}.</p>)}
-          {pendingCount > 0 && <p className="source-note">{pendingCount} new or changed announcements awaiting review. Research continues by platform within the per-check run budget.</p>}
+          <p className="source-note">Latest five announcements per platform, with no date cutoff. Previously verified results stay in history.</p>
+          {pendingCount > 0 && <p className="source-note">{pendingCount} new or changed announcements in this selection await review. Research continues within the per-check run budget.</p>}
           {sourceStatuses.filter(source => source.status !== "checked").map(source => <p className="source-note" key={source.id}>{SOURCE_CATALOG.find(item => item.id === source.id)?.name}: {source.error ?? "Coverage is incomplete."}</p>)}
           {trust ? (
             <section className="trust-panel" aria-labelledby="trust-title">

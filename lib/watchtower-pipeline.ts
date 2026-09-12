@@ -1,6 +1,6 @@
 import { getDatabase } from "../db";
 import { MONITOR_SOURCES } from "./source-config";
-import { collectSource, fingerprint, readEvidence, type Announcement, type SourceCheckpoint } from "./source-monitor";
+import { ANNOUNCEMENTS_PER_PLATFORM, collectSource, fingerprint, readEvidence, type Announcement, type SourceCheckpoint } from "./source-monitor";
 import { hasNimbleKey, readResearch, researchInput, startResearch, validateResearch, type ResearchRun, type ResearchStage } from "./nimble-research";
 import type { CheckTrigger, Finding, NimbleTrust, SnapshotHistory, PlatformReport } from "./watchtower";
 
@@ -87,10 +87,9 @@ async function collect(scan: ScanRow, state: ScanState) {
   for (const source of MONITOR_SOURCES) {
     if (state.sources.some(s => s.id === source.id)) continue;
     const checkpoint = await db.prepare("SELECT * FROM watchtower_sources WHERE id=?").bind(source.id).first<SourceCheckpoint>() ?? {};
-    const since = new Date(checkpoint.succeeded_at ? Date.parse(checkpoint.succeeded_at) - 6 * 3600000 : Date.parse(state.until) - 72 * 3600000).toISOString();
     try {
       const fetchedThrough = now();
-      const result = await collectSource(source, checkpoint, since, fetchedThrough);
+      const result = await collectSource(source, checkpoint, fetchedThrough);
       for (const item of result.items) {
         const hash = await fingerprint(JSON.stringify({ title: item.title, url: item.url, date: item.sourceDate, evidence: item.evidence }));
         const versionId = `${item.id}:${hash}`;
@@ -111,12 +110,25 @@ async function collect(scan: ScanRow, state: ScanState) {
     // One source per request keeps worker execution bounded and allows refresh recovery.
     if (state.sources.length < MONITOR_SOURCES.length) return;
   }
-  const rows = await db.prepare("SELECT a.version_id,a.evidence_json FROM watchtower_announcements a WHERE a.review_status='pending' AND NOT EXISTS (SELECT 1 FROM watchtower_announcements newer WHERE newer.advisory_id=a.advisory_id AND (newer.source_date>a.source_date OR (newer.source_date=a.source_date AND (newer.first_seen_at>a.first_seen_at OR (newer.first_seen_at=a.first_seen_at AND newer.version_id>a.version_id))))) ORDER BY a.source_date DESC")
-    .all<{ version_id: string; evidence_json: string }>();
-  state.candidates = rows.results.map(row => ({ ...JSON.parse(row.evidence_json), versionId: row.version_id }));
+  state.candidates = await pendingLatestAnnouncements();
   state.jobs = platformJobs(state.candidates);
   state.runsStarted = 0;
   await save(scan, state, state.candidates.length ? "investigator" : "orchestrator");
+}
+
+async function pendingLatestAnnouncements(): Promise<Candidate[]> {
+  // Rank all records before filtering their review status. Otherwise a no-change
+  // check would refill each platform with five older, unreviewed announcements.
+  const rows = await getDatabase().prepare(`WITH versions AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY advisory_id ORDER BY first_seen_at DESC, version_id DESC) AS version_rank
+    FROM watchtower_announcements
+  ), ranked AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY json_extract(evidence_json,'$.platform') ORDER BY source_date DESC, advisory_id ASC) AS platform_rank
+    FROM versions WHERE version_rank=1
+  ) SELECT version_id,evidence_json FROM ranked
+    WHERE platform_rank<=? AND review_status='pending' ORDER BY source_date DESC,advisory_id ASC`)
+    .bind(ANNOUNCEMENTS_PER_PLATFORM).all<{ version_id: string; evidence_json: string }>();
+  return rows.results.map(row => ({ ...JSON.parse(row.evidence_json), versionId: row.version_id }));
 }
 
 async function advancePlatformResearch(scan: ScanRow, state: ScanState) {
@@ -316,12 +328,12 @@ async function savedFeed(snapshotId?: string) {
   const sources = await db.prepare("SELECT id,status,error,checked_at,succeeded_at FROM watchtower_sources").all();
   const savedScan = row?.id.startsWith("scan:") ? await db.prepare("SELECT state_json FROM watchtower_scans WHERE id=?").bind(row.id.slice(5)).first<{ state_json: string }>() : null;
   const state: ScanState | undefined = savedScan ? JSON.parse(savedScan.state_json) : undefined;
-  const pending = await db.prepare("SELECT COUNT(*) AS count FROM watchtower_announcements WHERE review_status='pending'").first<{ count: number }>();
+  const pending = await pendingLatestAnnouncements();
   return { mode: row ? "live" : "idle", status: "completed", findings: row ? JSON.parse(row.findings_json) as Finding[] : [],
     checkedAt: row?.checked_at ?? null, snapshotId: row?.id ?? null, history: history.results.map(historyRow),
     trust: row?.trust_json ? JSON.parse(row.trust_json) as NimbleTrust : undefined, sourceStatuses: sources.results,
     platformReports: state ? platformReports(state, false) : [], runsStarted: state?.runsStarted ?? 0,
-    runBudget: CHECK_RUN_BUDGET, pendingCount: pending?.count ?? 0, message: row?.message ?? "No completed checks yet." };
+    runBudget: CHECK_RUN_BUDGET, pendingCount: pending.length, message: row?.message ?? "No completed checks yet." };
 }
 function platformReports(state: ScanState, running: boolean): PlatformReport[] {
   const sourceIds = { macos: ["apple"], windows: ["msrc"], linux: ["ubuntu"], ai: ["anthropic", "openai"] };

@@ -9,6 +9,19 @@ export type Announcement = {
 export type SourceCheckpoint = { etag?: string | null; last_modified?: string | null; succeeded_at?: string | null; documents_json?: string | null };
 export type SourceResult = { items: Announcement[]; etag: string | null; lastModified: string | null; unchanged: boolean; warning?: string; documentsJson?: string };
 
+export const ANNOUNCEMENTS_PER_PLATFORM = 5;
+export function latestPerPlatform<T extends Announcement>(items: T[]): T[] {
+  const counts = new Map<string, number>(), seen = new Set<string>();
+  return [...items].sort((a, b) => b.sourceDate.localeCompare(a.sourceDate) || a.id.localeCompare(b.id)).filter(item => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    const count = counts.get(item.platform) ?? 0;
+    if (count >= ANNOUNCEMENTS_PER_PLATFORM) return false;
+    counts.set(item.platform, count + 1);
+    return true;
+  });
+}
+
 const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@", processEntities: true });
 const list = <T>(value: T | T[] | undefined): T[] => value == null ? [] : Array.isArray(value) ? value : [value];
 export function plainText(value: string): string {
@@ -18,7 +31,7 @@ export function plainText(value: string): string {
 }
 function date(value: unknown): string | null {
   const parsed = typeof value === "string" ? Date.parse(value) : NaN;
-  return Number.isFinite(parsed) && parsed >= Date.UTC(2000, 0) ? new Date(parsed).toISOString() : null;
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 export async function fingerprint(value: string): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
@@ -56,11 +69,11 @@ async function boundedText(response: Response, limit = 4_000_000): Promise<strin
   return new TextDecoder().decode(merged);
 }
 
-export function parseSource(source: MonitorSource, body: string, since: string, until: string): Announcement[] {
+export function parseSource(source: MonitorSource, body: string, until: string): Announcement[] {
   const items: Announcement[] = [];
   const add = (id: string, title: string, url: string, timestamp: unknown, evidence: string, platform: Finding["platform"]) => {
     const sourceDate = date(timestamp);
-    if (!sourceDate || sourceDate < since || sourceDate > until || !approvedSourceUrl(url)) return;
+    if (!sourceDate || sourceDate > until || !approvedSourceUrl(url)) return;
     items.push({ id: `${source.id}:${id}`.slice(0, 160), sourceId: source.id, source: source.name,
       title: plainText(title).slice(0, 240), url, sourceDate, platform, evidence: plainText(evidence).slice(0, 4000) });
   };
@@ -122,49 +135,44 @@ export function parseSource(source: MonitorSource, body: string, since: string, 
   return Array.from(new Map(items.map(item => [item.id, item])).values());
 }
 
-export async function collectSource(source: MonitorSource, checkpoint: SourceCheckpoint, since: string, until: string): Promise<SourceResult> {
+export async function collectSource(source: MonitorSource, checkpoint: SourceCheckpoint, until: string): Promise<SourceResult> {
+  // Old checkpoints contain only a date window, not the full latest-five selection.
+  // Ignore their validators once so older announcements are actually retrieved.
+  const stored = checkpoint.documents_json ? JSON.parse(checkpoint.documents_json) : null;
+  const cached = stored?.policy === "latest-five-v1" && Array.isArray(stored.items) ? stored : null;
   const headers: Record<string, string> = {};
-  if (checkpoint.etag) headers["If-None-Match"] = checkpoint.etag;
-  if (checkpoint.last_modified) headers["If-Modified-Since"] = checkpoint.last_modified;
+  if (cached && checkpoint.etag) headers["If-None-Match"] = checkpoint.etag;
+  if (cached && checkpoint.last_modified) headers["If-Modified-Since"] = checkpoint.last_modified;
   const response = await fetchSource(source.url, headers);
-  if (response.status === 304 && source.id !== "msrc") return { items: [], etag: checkpoint.etag ?? null, lastModified: checkpoint.last_modified ?? null, unchanged: true };
-  if (!response.ok && response.status !== 304) throw new Error(`Source returned HTTP ${response.status}.`);
-  const body = response.status === 304 ? "" : await boundedText(response);
+  if (response.status === 304 && cached) return { items: cached.items, etag: checkpoint.etag ?? null, lastModified: checkpoint.last_modified ?? null, unchanged: true, warning: cached.warning, documentsJson: checkpoint.documents_json! };
+  if (!response.ok) throw new Error(`Source returned HTTP ${response.status}.`);
+  const body = await boundedText(response);
   const capturedUntil = new Date(Math.max(Date.parse(until), Date.now())).toISOString();
-  let items = body ? parseSource(source, body, since, capturedUntil) : [];
+  let items = parseSource(source, body, capturedUntil);
   let warning: string | undefined;
-  let documentsJson: string | undefined;
   if (source.id === "msrc") {
-    const ledger: { done: string[]; pending: Array<Announcement & { windowStart: string; windowEnd: string }> } = checkpoint.documents_json ? JSON.parse(checkpoint.documents_json) : { done: [], pending: [] };
-    const key = (item: Announcement) => `${item.id}:${item.sourceDate}`;
-    for (const item of items) if (!ledger.done.includes(key(item)) && !ledger.pending.some(p => key(p) === key(item))) ledger.pending.push({ ...item, windowStart: since, windowEnd: capturedUntil });
-    // The upstream index can list recently edited 2016 documents before current releases.
-    // Prefer the newest release month, while retaining older documents for real revisions.
-    ledger.pending.sort((a, b) => {
+    // Read the newest release documents first, not recently edited archive documents.
+    const documents = items.sort((a, b) => {
       const release = (item: Announcement) => Date.parse(item.id.replace(/^msrc:/, "1-")) || 0;
       return release(b) - release(a) || b.sourceDate.localeCompare(a.sourceDate);
     });
-    const documents = ledger.pending;
     items = [];
-    // Drain a durable queue independently of index freshness, one document per check.
-    for (const document of documents.slice(0, 1)) {
+    // Stop once five Windows advisories are available. This is a request bound,
+    // not an age cutoff; a quiet month can fall back to an older release.
+    for (const document of documents.slice(0, 5)) {
       const detail = await fetchSource(document.url);
       if (!detail.ok) throw new Error(`Microsoft advisory document returned HTTP ${detail.status}.`);
-      items.push(...parseMicrosoftDocument(await boundedText(detail, 25_000_000), document.windowStart, document.windowEnd));
-      ledger.done.push(key(document)); ledger.pending = ledger.pending.filter(p => key(p) !== key(document));
+      items = latestPerPlatform([...items, ...parseMicrosoftDocument(await boundedText(detail, 25_000_000), capturedUntil)]);
+      if (items.length >= ANNOUNCEMENTS_PER_PLATFORM) break;
     }
-    if (ledger.pending.length) warning = `${ledger.pending.length} revised Microsoft documents queued for later checks.`;
-    documentsJson = JSON.stringify(ledger);
+    if (items.length < ANNOUNCEMENTS_PER_PLATFORM && documents.length > 5) warning = "Fewer than five Windows announcements were found in the five newest release documents; older documents were not checked.";
   }
-  if (source.id === "ubuntu") {
-    const feed = parser.parse(body);
-    const dates = list<any>(feed.rss?.channel?.item ?? feed.feed?.entry).map(x => date(x.pubDate ?? x.updated ?? x.published)).filter(Boolean).sort();
-    if (dates.length && dates[0]! > since) warning = "The current Ubuntu feed does not cover the full requested time window; older entries may be missing.";
-  }
-  return { items, etag: response.headers.get("etag") ?? checkpoint.etag ?? null, lastModified: response.headers.get("last-modified") ?? checkpoint.last_modified ?? null, unchanged: response.status === 304, warning, documentsJson };
+  items = latestPerPlatform(items);
+  const documentsJson = JSON.stringify({ policy: "latest-five-v1", items, warning });
+  return { items, etag: response.headers.get("etag"), lastModified: response.headers.get("last-modified"), unchanged: false, warning, documentsJson };
 }
 
-export function parseMicrosoftDocument(body: string, since: string, until: string): Announcement[] {
+export function parseMicrosoftDocument(body: string, until: string): Announcement[] {
   const data = JSON.parse(body);
   if (!Array.isArray(data.Vulnerability)) throw new Error("Microsoft advisory document has an unexpected format.");
   const windows = new Map(list<any>(data.ProductTree?.FullProductName).filter(x => /Windows/i.test(x.Value)).map(x => [String(x.ProductID), String(x.Value)]));
@@ -174,7 +182,7 @@ export function parseMicrosoftDocument(body: string, since: string, until: strin
     if (!products.length || !/^CVE-\d{4}-\d+$/.test(v.CVE)) continue;
     const revisions = list<any>(v.RevisionHistory).filter(r => !/acknowledg|credit|typo/i.test(r.Description?.Value ?? ""));
     const sourceDate = revisions.map(r => date(r.Date)).filter((x): x is string => Boolean(x)).sort().at(-1);
-    if (!sourceDate || sourceDate < since || sourceDate > until) continue;
+    if (!sourceDate || sourceDate > until) continue;
     const evidence = JSON.stringify({ cve: v.CVE, title: v.Title?.Value, products: products.slice(0, 12).map(id => windows.get(id)),
       revisions: revisions.slice(-3), notes: list<any>(v.Notes).slice(0, 3), threats: list<any>(v.Threats).slice(0, 4), remediations: list<any>(v.Remediations).slice(0, 3) });
     output.push({ id: `msrc:${v.CVE}`, sourceId: "msrc", source: "Microsoft Windows advisories", title: v.Title?.Value ?? v.CVE,
