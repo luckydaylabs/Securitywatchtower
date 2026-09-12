@@ -1,8 +1,9 @@
 import { XMLParser } from "fast-xml-parser";
 import { approvedSourceUrl, type MonitorSource } from "./source-config";
 import type { Finding } from "./watchtower";
+import { sourceTimestamp, type AnnouncementDates } from "./announcement-dates";
 
-export type Announcement = {
+export type Announcement = AnnouncementDates & {
   id: string; sourceId: string; source: string; url: string; title: string;
   sourceDate: string; platform: Finding["platform"]; evidence: string;
 };
@@ -30,7 +31,8 @@ export function plainText(value: string): string {
     .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/\s+/g, " ").trim();
 }
 function date(value: unknown): string | null {
-  const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+  const timestamp = sourceTimestamp(value);
+  const parsed = timestamp ? Date.parse(timestamp.value) : NaN;
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 export async function fingerprint(value: string): Promise<string> {
@@ -71,11 +73,12 @@ async function boundedText(response: Response, limit = 4_000_000): Promise<strin
 
 export function parseSource(source: MonitorSource, body: string, until: string): Announcement[] {
   const items: Announcement[] = [];
-  const add = (id: string, title: string, url: string, timestamp: unknown, evidence: string, platform: Finding["platform"]) => {
+  const add = (id: string, title: string, url: string, timestamp: unknown, evidence: string, platform: Finding["platform"], published?: unknown, updated?: unknown) => {
     const sourceDate = date(timestamp);
     if (!sourceDate || sourceDate > until || !approvedSourceUrl(url)) return;
     items.push({ id: `${source.id}:${id}`.slice(0, 160), sourceId: source.id, source: source.name,
-      title: plainText(title).slice(0, 240), url, sourceDate, platform, evidence: plainText(evidence).slice(0, 4000) });
+      title: plainText(title).slice(0, 240), url, sourceDate, platform, evidence: plainText(evidence).slice(0, 4000),
+      publishedAt: sourceTimestamp(published), updatedAt: sourceTimestamp(updated) });
   };
   if (source.id === "ubuntu") {
     const xml = parser.parse(body);
@@ -87,7 +90,7 @@ export function parseSource(source: MonitorSource, body: string, until: string):
       if (!url) continue;
       const text = (v: any) => typeof v === "string" ? v : v?.["#text"] ?? "";
       add(String(text(entry.id) || text(entry.guid) || url).split("/").filter(Boolean).pop()!, text(entry.title), url,
-        entry.updated ?? entry.published ?? entry.pubDate, text(entry.content ?? entry.summary ?? entry.description), "linux");
+        entry.updated ?? entry.published ?? entry.pubDate, text(entry.content ?? entry.summary ?? entry.description), "linux", entry.published ?? entry.pubDate, entry.updated);
     }
   } else if (source.id === "msrc") {
     const data = JSON.parse(body);
@@ -95,7 +98,7 @@ export function parseSource(source: MonitorSource, body: string, until: string):
     for (const item of data.value) {
       add(String(item.ID), String(item.DocumentTitle ?? item.Alias ?? item.ID),
         item.CvrfUrl ?? `https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/${encodeURIComponent(item.ID)}`,
-        item.CurrentReleaseDate ?? item.InitialReleaseDate, JSON.stringify(item), "windows");
+        item.CurrentReleaseDate ?? item.InitialReleaseDate, JSON.stringify(item), "windows", item.InitialReleaseDate, item.CurrentReleaseDate);
     }
   } else if (source.id === "apple") {
     const rows = body.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) ?? [];
@@ -106,7 +109,7 @@ export function parseSource(source: MonitorSource, body: string, until: string):
       const anchor = row.match(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i);
       if (!anchor) continue;
       const url = new URL(anchor[1], source.url).href;
-      add(url.split("/").pop()!, anchor[2], url, stamp, row, "macos");
+      add(url.split("/").pop()!, anchor[2], url, stamp, row, "macos", stamp);
     }
   } else if (source.id === "anthropic") {
     const records = JSON.parse(body);
@@ -116,7 +119,7 @@ export function parseSource(source: MonitorSource, body: string, until: string):
       // AI-assisted discovery in unrelated software is not an AI-platform vulnerability.
       if (!/claude|anthropic|prompt.?injection|model context protocol|\bmcp\b/i.test(`${record.project} ${record.bug_class}`)) continue;
       add(record.ant_id, `${record.project}: ${record.bug_class}`, `https://red.anthropic.com/2026/cvd/findings/${encodeURIComponent(record.ant_id)}.html`,
-        record.revealed_at, JSON.stringify(record), "ai");
+        record.revealed_at, JSON.stringify(record), "ai", record.revealed_at);
     }
   } else if (source.id === "openai") {
     const json = body.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i)?.[1];
@@ -128,7 +131,7 @@ export function parseSource(source: MonitorSource, body: string, until: string):
       for (const update of list<any>(topic.updates)) {
         const text = `${topic.subject} ${plainText(update.message ?? "")}`;
         if (!/CVE-\d{4}-\d+|security incident|vulnerabilit|prompt.?injection/i.test(text)) continue;
-        add(String(update.id), topic.subject, source.url, update.updatedAt ?? update.createdAt, text, "ai");
+        add(String(update.id), topic.subject, source.url, update.updatedAt ?? update.createdAt, text, "ai", update.createdAt, update.updatedAt);
       }
     }
   }
@@ -139,7 +142,7 @@ export async function collectSource(source: MonitorSource, checkpoint: SourceChe
   // Old checkpoints contain only a date window, not the full latest-five selection.
   // Ignore their validators once so older announcements are actually retrieved.
   const stored = checkpoint.documents_json ? JSON.parse(checkpoint.documents_json) : null;
-  const cached = stored?.policy === "latest-five-v1" && Array.isArray(stored.items) ? stored : null;
+  const cached = stored?.policy === "latest-five-dates-v2" && Array.isArray(stored.items) ? stored : null;
   const headers: Record<string, string> = {};
   if (cached && checkpoint.etag) headers["If-None-Match"] = checkpoint.etag;
   if (cached && checkpoint.last_modified) headers["If-Modified-Since"] = checkpoint.last_modified;
@@ -168,7 +171,7 @@ export async function collectSource(source: MonitorSource, checkpoint: SourceChe
     if (items.length < ANNOUNCEMENTS_PER_PLATFORM && documents.length > 5) warning = "Fewer than five Windows announcements were found in the five newest release documents; older documents were not checked.";
   }
   items = latestPerPlatform(items);
-  const documentsJson = JSON.stringify({ policy: "latest-five-v1", items, warning });
+  const documentsJson = JSON.stringify({ policy: "latest-five-dates-v2", items, warning });
   return { items, etag: response.headers.get("etag"), lastModified: response.headers.get("last-modified"), unchanged: false, warning, documentsJson };
 }
 
@@ -185,8 +188,15 @@ export function parseMicrosoftDocument(body: string, until: string): Announcemen
     if (!sourceDate || sourceDate > until) continue;
     const evidence = JSON.stringify({ cve: v.CVE, title: v.Title?.Value, products: products.slice(0, 12).map(id => windows.get(id)),
       revisions: revisions.slice(-3), notes: list<any>(v.Notes).slice(0, 3), threats: list<any>(v.Threats).slice(0, 4), remediations: list<any>(v.Remediations).slice(0, 3) });
+    const ordered = list<any>(v.RevisionHistory).filter(r => date(r.Date)).sort((a, b) => date(a.Date)!.localeCompare(date(b.Date)!));
+    const latest = [...revisions].filter(r => date(r.Date)).sort((a, b) => date(a.Date)!.localeCompare(date(b.Date)!)).at(-1);
+    const initial = /initial|first publish|original release|information published/i.test(ordered[0]?.Description?.Value ?? "") || String(ordered[0]?.Number) === "1.0";
     output.push({ id: `msrc:${v.CVE}`, sourceId: "msrc", source: "Microsoft Windows advisories", title: v.Title?.Value ?? v.CVE,
-      url: `https://msrc.microsoft.com/update-guide/vulnerability/${v.CVE}`, sourceDate, platform: "windows", evidence: evidence.slice(0, 4000) });
+      url: `https://msrc.microsoft.com/update-guide/vulnerability/${v.CVE}`, sourceDate, platform: "windows", evidence: evidence.slice(0, 4000),
+      // Only an explicitly initial revision establishes publication; the earliest
+      // retained revision alone is not proof of the original publication date.
+      publishedAt: initial ? sourceTimestamp(ordered[0].Date) : undefined,
+      updatedAt: latest && (!initial || latest !== ordered[0]) ? sourceTimestamp(latest.Date) : undefined });
   }
   return output;
 }

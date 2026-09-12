@@ -265,6 +265,10 @@ h2 { margin-bottom: 0; font-size: 25px; font-weight: 760; letter-spacing: -0.035
 .meta-separator { color: #c0c9d2; }
 .finding-title { font-size: 16px; font-weight: 750; letter-spacing: -0.015em; line-height: 1.35; transition: color 150ms ease; }
 .finding-summary { color: var(--muted); font-size: 14px; line-height: 1.45; }
+.finding-dates { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 12px 18px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.finding-dates > span { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.finding-dates strong { font-size: 14px; font-weight: 600; }
+.finding-dates > span > span { font-size: 14px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
 .chevron { align-self: center; flex: 0 0 auto; color: #97a5b2; transition: transform 160ms ease; }
 .chevron-open { transform: rotate(180deg); }
 

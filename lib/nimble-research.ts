@@ -85,12 +85,15 @@ export function validateResearch(payload: unknown, items: Announcement[]): Findi
     const parsed = findingValidator.safeParse(candidate);
     if (!parsed.success) throw new Error(`Research returned invalid fields: ${parsed.error.issues.slice(0, 2).map(x => x.path.join(".")).join(", ")}. The result is saved.`);
     if (!approvedSourceUrl(parsed.data.sourceUrl)) throw new Error("Research returned an unapproved source URL.");
-    return parsed.data;
+    return { ...parsed.data, publishedAt: sourceItem.publishedAt, updatedAt: sourceItem.updatedAt, firstDiscoveredAt: sourceItem.firstDiscoveredAt };
   });
 }
 export function researchInput(scanId: string, stage: ResearchStage, items: Announcement[], findings?: Finding[]): string {
   if (!items.length || new Set(items.map(x => x.id)).size !== items.length || items.some(x => !x.id || x.id.length > 160 || !approvedSourceUrl(x.url) || !Number.isFinite(Date.parse(x.sourceDate)))) throw new Error("Research requires distinct, dated official announcements.");
   if (findings?.some(f => !items.some(x => x.id === f.id))) throw new Error("Verification input includes an unknown announcement.");
+  // Publisher/discovery metadata is application-owned, not additional research input.
+  // Keep it out of verification batches so adding dates does not increase run costs.
+  findings = findings?.map(finding => findingValidator.parse(finding));
   const compact = items.map(item => ({ id: item.id, platform: item.platform, title: item.title, source: item.source,
     url: item.url, publishedOrUpdatedAt: item.sourceDate, capturedEvidence: item.evidence.slice(0, stage === "investigator" ? Math.max(150, Math.floor(4200 / items.length)) : 150) }));
   const task = stage === "investigator"

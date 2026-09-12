@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { MONITOR_SOURCES } from "../lib/source-config";
-import { parseSource, parseMicrosoftDocument, collectSource, latestPerPlatform, type Announcement } from "../lib/source-monitor";
+import { parseSource, parseMicrosoftDocument, collectSource, latestPerPlatform, fingerprint, type Announcement } from "../lib/source-monitor";
 import { researchInput, researchSchema, validateResearch, readResearch } from "../lib/nimble-research";
 import { startScan, advanceScan, dashboardFeed } from "../lib/watchtower-pipeline";
 import { getDatabase, resetDatabase, setBatchHook } from "./d1-fixture";
 import { platformJobs, researchBatches } from "../lib/platform-research";
+import { sourceTimestamp, formatSourceTimestamp } from "../lib/announcement-dates";
 
 const since = "2026-09-09T00:00:00.000Z", until = "2026-09-12T23:59:59.000Z";
 const source = (id: string) => MONITOR_SOURCES.find(s => s.id === id)!;
@@ -13,6 +14,72 @@ const item: Announcement = { id: "ubuntu:USN-1234-1", sourceId: "ubuntu", source
 const finding = { id: item.id, source: item.source, sourceUrl: item.url, platform: "linux", detectedAt: item.sourceDate, severity: "high", title: "Test advisory", summary: "Fixture summary", whatHappened: "Fixture evidence", whyItMatters: "Fixture impact", nextStep: "Install the vendor update", signalType: "Security update", scope: "Ubuntu", evidenceNote: "Fixture source note" };
 const originalFetch = globalThis.fetch;
 process.env.NIMBLE_API_KEY = "test-placeholder-not-a-real-key";
+
+test("Source timestamps preserve date-only precision, real midnight, offsets, and unknown timezones", () => {
+  assert.equal(formatSourceTimestamp(sourceTimestamp("6 August 2026")), "Aug 6, 2026 (time not provided)");
+  assert.equal(formatSourceTimestamp(sourceTimestamp("2026-08-06T00:00:00Z")), "Aug 6, 2026, 00:00:00 UTC");
+  assert.equal(formatSourceTimestamp(sourceTimestamp("2026-08-06T09:15+07:00")), "Aug 6, 2026, 02:15 UTC");
+  assert.equal(formatSourceTimestamp(sourceTimestamp("2026-08-06T09:15")), "2026-08-06T09:15 (timezone not specified)");
+  assert.equal(sourceTimestamp("not a date"), undefined);
+});
+
+test("Source parsers distinguish publication from updates without manufacturing absent fields", () => {
+  const ubuntu = parseSource(source("ubuntu"), `<feed><entry><id>USN-1</id><title>Update</title><link href="${item.url}"/><published>2026-08-01T12:30:00Z</published><updated>2026-09-11T14:15:00Z</updated></entry></feed>`, until)[0];
+  assert.equal(ubuntu.publishedAt?.value, "2026-08-01T12:30:00.000Z");
+  assert.equal(ubuntu.updatedAt?.value, "2026-09-11T14:15:00.000Z");
+  const apple = parseSource(source("apple"), '<table><tr><td><a href="/en-us/123456">macOS Tahoe</a></td><td>6 August 2026</td></tr></table>', until)[0];
+  assert.equal(apple.publishedAt?.precision, "date");
+  assert.equal(apple.updatedAt, undefined);
+  const verified = validateResearch({ findings: [{ ...finding, id: ubuntu.id, publishedAt: { value: "invented" } }] }, [ubuntu])[0];
+  assert.deepEqual(verified.publishedAt, ubuntu.publishedAt);
+});
+
+test("Microsoft publication requires an initial revision, separate from subsequent meaningful updates", () => {
+  const base = { ProductTree: { FullProductName: [{ ProductID: "1", Value: "Windows 11" }] }, Vulnerability: [{ CVE: "CVE-2026-1234", ProductStatuses: [{ ProductID: ["1"] }], RevisionHistory: [
+    { Number: "1.0", Date: "2026-08-01T12:00:00Z", Description: { Value: "Information published." } },
+    { Number: "2.0", Date: "2026-09-11", Description: { Value: "Affected products updated" } },
+  ] }] };
+  const parsed = parseMicrosoftDocument(JSON.stringify(base), until)[0];
+  assert.equal(parsed.publishedAt?.value, "2026-08-01T12:00:00.000Z");
+  assert.equal(parsed.updatedAt?.precision, "date");
+  base.Vulnerability[0].RevisionHistory.shift();
+  const partial = parseMicrosoftDocument(JSON.stringify(base), until)[0];
+  assert.equal(partial.publishedAt, undefined);
+  assert.equal(partial.updatedAt?.value, "2026-09-11");
+});
+
+test("Metadata refresh preserves discovery, accepted research, and snapshot history without paid runs", async () => {
+  resetDatabase();
+  const db = getDatabase();
+  const body = `<feed><entry><id>USN-1234-1</id><title>Test advisory</title><link href="${item.url}"/><published>2026-08-01</published><updated>2026-09-11T00:00:00Z</updated><summary>Test fixture only.</summary></entry></feed>`;
+  const parsed = parseSource(source("ubuntu"), body, until)[0];
+  const hash = await fingerprint(JSON.stringify({ title: parsed.title, url: parsed.url, date: parsed.sourceDate, evidence: parsed.evidence }));
+  await db.prepare("INSERT INTO watchtower_announcements(version_id,advisory_id,source_id,content_hash,source_date,first_seen_at,evidence_json,review_status,finding_json) VALUES(?,?,?,?,?,?,?,?,?)")
+    .bind(`${parsed.id}:${hash}`, parsed.id, parsed.sourceId, hash, parsed.sourceDate, since,
+      JSON.stringify({ ...parsed, publishedAt: undefined, updatedAt: undefined }), "accepted", JSON.stringify(finding)).run();
+  globalThis.fetch = async (_url: any, init?: any) => {
+    assert.notEqual(init?.method, "POST", "Metadata enrichment must not submit research");
+    return new Response(body);
+  };
+  try {
+    for (let n = 0; n < 2; n++) {
+      const scan: any = await startScan("manual");
+      await db.prepare("UPDATE watchtower_scans SET state_json=? WHERE id=?").bind(JSON.stringify({ trigger: "manual", until, candidates: [],
+        sources: MONITOR_SOURCES.filter(s => s.id !== "ubuntu").map(s => ({ id: s.id, status: "checked", count: 0 })) }), scan.runId).run();
+      await advanceScan(scan.runId);
+      const result = await advanceScan(scan.runId);
+      assert.equal(result.status, "completed");
+      assert.equal(result.findings.length, 1);
+      assert.equal(result.findings[0].publishedAt?.value, "2026-08-01");
+      assert.equal(result.findings[0].firstDiscoveredAt, since);
+      assert.equal(result.history.length, n + 1);
+      assert.equal(result.pendingCount, 0);
+    }
+    const refreshed = await dashboardFeed();
+    assert.equal(refreshed.findings[0].updatedAt?.value, "2026-09-11T00:00:00.000Z");
+    assert.equal((await db.prepare("SELECT COUNT(*) AS count FROM watchtower_announcements").first()).count, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});
 
 test("RSS object GUIDs remain distinct; older notices stay eligible without a date cutoff", () => {
   const body = `<rss><channel>${[1, 2].map(n => `<item><guid isPermaLink="false">USN-${n}</guid><title>Notice ${n}</title><link>https://ubuntu.com/security/notices/USN-${n}</link><pubDate>Fri, 11 Sep 2026 00:00:00 GMT</pubDate></item>`).join("")}<item><title>Old</title><link>https://ubuntu.com/security/notices/old</link><pubDate>2020-01-01</pubDate></item></channel></rss>`;
@@ -105,7 +172,7 @@ test("Latest-five cache retains selected announcements on 304", async () => {
     return new Response(null, { status: 304 });
   };
   try {
-    const result = await collectSource(source("ubuntu"), { etag: "v1", documents_json: JSON.stringify({ policy: "latest-five-v1", items: [item] }) }, until);
+    const result = await collectSource(source("ubuntu"), { etag: "v1", documents_json: JSON.stringify({ policy: "latest-five-dates-v2", items: [item] }) }, until);
     assert.deepEqual(result.items, [item]);
     assert.equal(result.unchanged, true);
   } finally { globalThis.fetch = originalFetch; }

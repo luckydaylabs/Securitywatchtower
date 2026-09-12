@@ -91,9 +91,13 @@ async function collect(scan: ScanRow, state: ScanState) {
       const fetchedThrough = now();
       const result = await collectSource(source, checkpoint, fetchedThrough);
       for (const item of result.items) {
+        const firstSeen = await db.prepare("SELECT MIN(first_seen_at) AS first_seen_at FROM watchtower_announcements WHERE advisory_id=?")
+          .bind(item.id).first<{ first_seen_at: string | null }>();
+        item.firstDiscoveredAt = firstSeen?.first_seen_at ?? now();
         const hash = await fingerprint(JSON.stringify({ title: item.title, url: item.url, date: item.sourceDate, evidence: item.evidence }));
         const versionId = `${item.id}:${hash}`;
-        await write(scan.lease, "INSERT INTO watchtower_announcements(version_id,advisory_id,source_id,content_hash,source_date,first_seen_at,evidence_json,review_status) VALUES(?,?,?,?,?,?,?,'pending') ON CONFLICT(version_id) DO NOTHING")
+        // Date metadata is enriched in place; it does not invalidate prior research.
+        await write(scan.lease, "INSERT INTO watchtower_announcements(version_id,advisory_id,source_id,content_hash,source_date,first_seen_at,evidence_json,review_status) VALUES(?,?,?,?,?,?,?,'pending') ON CONFLICT(version_id) DO UPDATE SET evidence_json=excluded.evidence_json")
           .bind(versionId, item.id, item.sourceId, hash, item.sourceDate, now(), JSON.stringify(item)).run();
       }
       const status = result.warning ? "partial" : "checked";
@@ -236,7 +240,26 @@ async function currentFindings(): Promise<Finding[]> {
   // Retain previously published snapshots when migrating from the original pipeline.
   const previous = await db.prepare("SELECT findings_json FROM watchtower_snapshots ORDER BY checked_at DESC LIMIT 1").first<{ findings_json: string }>();
   for (const finding of previous ? JSON.parse(previous.findings_json) as Finding[] : []) if (!findings.has(finding.id)) findings.set(finding.id, finding);
-  return [...findings.values()].sort((a, b) => b.detectedAt.localeCompare(a.detectedAt));
+  return hydrateFindingDates([...findings.values()].sort((a, b) => b.detectedAt.localeCompare(a.detectedAt)));
+}
+
+async function hydrateFindingDates(findings: Finding[]): Promise<Finding[]> {
+  if (!findings.length) return findings;
+  const db = getDatabase();
+  const rows = await db.prepare("SELECT advisory_id,source_date,evidence_json,first_seen_at,review_status FROM watchtower_announcements ORDER BY first_seen_at ASC,version_id ASC")
+    .all<{ advisory_id: string; source_date: string; evidence_json: string; first_seen_at: string; review_status: string }>();
+  const firstSeen = new Map<string, string>();
+  const dates = new Map<string, Announcement>();
+  for (const row of rows.results) {
+    if (!firstSeen.has(row.advisory_id)) firstSeen.set(row.advisory_id, row.first_seen_at);
+    if (row.review_status === "accepted") dates.set(`${row.advisory_id}:${row.source_date}`, JSON.parse(row.evidence_json));
+  }
+  return findings.map(finding => {
+    const captured = dates.get(`${finding.id}:${finding.detectedAt}`);
+    return { ...finding, publishedAt: finding.publishedAt ?? captured?.publishedAt,
+      updatedAt: finding.updatedAt ?? captured?.updatedAt,
+      firstDiscoveredAt: firstSeen.get(finding.id) ?? finding.firstDiscoveredAt };
+  });
 }
 async function publish(scan: ScanRow, state: ScanState, verified: Finding[]) {
   const db = getDatabase();
@@ -329,7 +352,7 @@ async function savedFeed(snapshotId?: string) {
   const savedScan = row?.id.startsWith("scan:") ? await db.prepare("SELECT state_json FROM watchtower_scans WHERE id=?").bind(row.id.slice(5)).first<{ state_json: string }>() : null;
   const state: ScanState | undefined = savedScan ? JSON.parse(savedScan.state_json) : undefined;
   const pending = await pendingLatestAnnouncements();
-  return { mode: row ? "live" : "idle", status: "completed", findings: row ? JSON.parse(row.findings_json) as Finding[] : [],
+  return { mode: row ? "live" : "idle", status: "completed", findings: row ? await hydrateFindingDates(JSON.parse(row.findings_json) as Finding[]) : [],
     checkedAt: row?.checked_at ?? null, snapshotId: row?.id ?? null, history: history.results.map(historyRow),
     trust: row?.trust_json ? JSON.parse(row.trust_json) as NimbleTrust : undefined, sourceStatuses: sources.results,
     platformReports: state ? platformReports(state, false) : [], runsStarted: state?.runsStarted ?? 0,

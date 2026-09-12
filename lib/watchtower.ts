@@ -1,4 +1,5 @@
 import { MONITOR_SOURCES } from "./source-config";
+import type { AnnouncementDates } from "./announcement-dates";
 export type PlatformKey = "all" | "macos" | "windows" | "linux" | "ai";
 export type Severity = "critical" | "high" | "medium" | "low";
 export type CheckTrigger = "manual" | "automatic";
@@ -27,7 +28,7 @@ export type NimbleTrust = {
   claims: Array<Record<string, unknown>>;
 };
 
-export type Finding = {
+export type Finding = AnnouncementDates & {
   id: string;
   platform: Exclude<PlatformKey, "all">;
   severity: Severity;

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
+import { formatSourceTimestamp, sourceTimestamp } from "@/lib/announcement-dates";
 import {
   Activity,
   ArrowUpRight,
@@ -122,16 +123,6 @@ function formatCheckedAt(value?: string) {
   const seconds = Math.max(0, Math.round((Date.now() - parsed.getTime()) / 1000));
   if (seconds < 60) return "Just now";
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} hr ago`;
-  return parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function findingTime(value: string) {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  const minutes = Math.max(1, Math.round((Date.now() - parsed.getTime()) / 60000));
   if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.round(minutes / 60);
   if (hours < 24) return `${hours} hr ago`;
@@ -721,8 +712,6 @@ export default function Home() {
                           <span className="severity-helper">{severityDescriptions[finding.severity]}</span>
                           <span className="meta-separator" aria-hidden="true">·</span>
                           <span>{platform.label}</span>
-                          <span className="meta-separator" aria-hidden="true">·</span>
-                          <span>{findingTime(finding.detectedAt)}</span>
                         </span>
                         <span className="finding-title">{finding.title}</span>
                         <span className="finding-systems">
@@ -730,6 +719,11 @@ export default function Home() {
                           <span className="finding-systems-value">{finding.scope?.trim() || "Not specified in the source"}</span>
                         </span>
                         <span className="finding-summary">{finding.summary}</span>
+                        <span className="finding-dates">
+                          <span><strong>Published</strong><span>{formatSourceTimestamp(finding.publishedAt)}</span></span>
+                          <span><strong>Updated</strong><span>{formatSourceTimestamp(finding.updatedAt)}</span></span>
+                          <span><strong>First discovered</strong><span>{finding.firstDiscoveredAt ? formatSourceTimestamp(sourceTimestamp(finding.firstDiscoveredAt)) : "Not recorded"}</span></span>
+                        </span>
                       </span>
                       <ChevronDown className={`chevron ${expanded ? "chevron-open" : ""}`} size={19} aria-hidden="true" />
                     </button>
@@ -761,7 +755,7 @@ export default function Home() {
                               </a>
                             </span>
                           </div>
-                          <span className="evidence-time">Detected {findingTime(finding.detectedAt)}</span>
+                          {!finding.publishedAt && !finding.updatedAt && <span className="evidence-time">Legacy source date: {finding.detectedAt.slice(0, 10)}. Publication/update type and time precision were not recorded.</span>}
                         </div>
 
                         <div className="technical-disclosure">
