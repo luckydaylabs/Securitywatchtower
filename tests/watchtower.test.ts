@@ -13,6 +13,15 @@ const source = (id: string) => MONITOR_SOURCES.find(s => s.id === id)!;
 const item: Announcement = { id: "ubuntu:USN-1234-1", sourceId: "ubuntu", source: "Ubuntu Security Notices", title: "Test advisory", url: "https://ubuntu.com/security/notices/USN-1234-1", sourceDate: "2026-09-11T00:00:00.000Z", platform: "linux", evidence: "Test fixture only." };
 const finding = { id: item.id, source: item.source, sourceUrl: item.url, platform: "linux", detectedAt: item.sourceDate, severity: "high", title: "Test advisory", summary: "Fixture summary", whatHappened: "Fixture evidence", whyItMatters: "Fixture impact", nextStep: "Install the vendor update", signalType: "Security update", scope: "Ubuntu", evidenceNote: "Fixture source note" };
 const originalFetch = globalThis.fetch;
+test("Affected-system labels preserve long Microsoft version lists but reject invalid values", () => {
+  const windows = { ...item, id: "msrc:CVE-2026-12345", sourceId: "msrc", platform: "windows" as const, source: "Microsoft CSAF advisories", url: "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-12345" };
+  const scope = "Windows Server 2025 (Server Core installation); ".repeat(8).trim();
+  const validate = (value: unknown) => validateResearch({ findings: [{ ...finding, id: windows.id, sourceUrl: windows.url, scope: value }] }, [windows]);
+  assert.equal(validate(scope)[0].scope, scope);
+  assert.throws(() => validate(" "), /scope/);
+  assert.throws(() => validate(["Windows"]), /scope/);
+  assert.throws(() => validate("x".repeat(1601)), /scope/);
+});
 test("One-time reset refuses active checks and cannot erase subsequent data", async () => {
   resetDatabase();
   const db = getDatabase();

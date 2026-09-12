@@ -5,7 +5,7 @@ import Image from "next/image";
 import { formatSourceTimestamp, sourceTimestamp } from "@/lib/announcement-dates";
 import {
   Activity,
-  ArrowUpRight,
+  CalendarDays,
   CheckCircle2,
   ChevronDown,
   CircleAlert,
@@ -34,6 +34,22 @@ import {
 } from "@/lib/watchtower";
 import { VulnerabilityTicker } from "@/components/vulnerability-ticker";
 import { ThreatAnalytics } from "@/components/threat-analytics";
+import { Skeleton } from "@/components/ui/skeleton";
+
+function DashboardSkeleton() {
+  return <div className="dashboard-skeleton" role="status" aria-label="Loading saved announcements" aria-busy="true">
+    <span className="sr-only">Loading saved announcements…</span>
+    <div aria-hidden="true">
+      <Skeleton className="skeleton-ticker" />
+      <div className="metrics-grid">{Array.from({ length: 4 }, (_, i) => <div className="metric-card" key={i}><Skeleton className="skeleton-label" /><Skeleton className="skeleton-number" /><Skeleton className="skeleton-line" /></div>)}</div>
+      <Skeleton className="skeleton-section-title" />
+      <div className="skeleton-analytics"><Skeleton /><Skeleton /></div>
+      <Skeleton className="skeleton-section-title" />
+      <div className="platform-grid">{Array.from({ length: 4 }, (_, i) => <Skeleton className="skeleton-platform" key={i} />)}</div>
+      <div className="operations-grid"><div>{Array.from({ length: 3 }, (_, i) => <div className="metric-card skeleton-finding" key={i}><Skeleton className="skeleton-label" /><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /><Skeleton className="skeleton-number" /></div>)}</div><Skeleton className="skeleton-sources" /></div>
+    </div>
+  </div>;
+}
 
 type FeedMode = "idle" | "live" | "fallback" | "pending" | "partial";
 type PipelineStage = "monitor" | "investigator" | "verifier" | "orchestrator";
@@ -176,6 +192,7 @@ function trustClaimExcerpt(claim: Record<string, unknown>) {
 
 export default function Home() {
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [initialDataLoading, setInitialDataLoading] = useState(true);
   const [history, setHistory] = useState<SnapshotHistory[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>();
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("loading");
@@ -319,6 +336,8 @@ export default function Home() {
       setHistoryStatus("error");
       setMode("fallback");
       setHistoryError(loadError instanceof Error ? loadError.message : "Saved check history could not be loaded.");
+    } finally {
+      setInitialDataLoading(false);
     }
   }, []);
 
@@ -476,6 +495,14 @@ export default function Home() {
   const scopeFindings = selectedPlatform === "all" ? findings : findings.filter(finding => finding.platform === selectedPlatform);
   const reviewedCount = findings.length - openCount;
   const platformsRepresented = new Set(findings.map(finding => finding.platform)).size;
+  const latestPublicationDay = findings.flatMap(finding => {
+    const value = finding.publishedAt?.value;
+    const day = value?.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
+    return day && Number.isFinite(Date.parse(`${day}T00:00:00Z`)) ? [day] : [];
+  }).sort().at(-1);
+  const latestPublicationLabel = latestPublicationDay
+    ? new Date(`${latestPublicationDay}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+    : "Not available";
   const criticalCount = findings.filter(
     (finding) => finding.severity === "critical" && !reviewedIds.has(finding.id),
   ).length;
@@ -564,9 +591,9 @@ export default function Home() {
           <div className={`topbar-status-group${mode === "partial" || mode === "fallback" ? " has-notice" : ""}`} aria-label="Monitoring status">
           <div className="topbar-status">
             <span className="status-dot" aria-hidden="true" />
-            <span>{monitoringStatus}</span>
+            <span>{initialDataLoading ? "Loading saved announcements…" : monitoringStatus}</span>
             <span className="topbar-divider" aria-hidden="true" />
-            <span>Last checked {formatCheckedAt(lastChecked)}</span>
+            {!initialDataLoading && <span>Last checked {formatCheckedAt(lastChecked)}</span>}
           </div>
           {mode === "partial" && <p className="topbar-status-note" role="status">Verified announcements saved. Some platforms could not finish; see Sources for details. Another check may use additional agent runs.</p>}
           {mode === "fallback" && <p className="topbar-status-note" role="alert">{error ?? (findings.length ? "The check could not finish. Previously loaded findings remain visible." : "Results could not be loaded. Check the connection or try again.")}</p>}
@@ -595,7 +622,7 @@ export default function Home() {
               className={`refresh-button ${isRefreshing ? "refresh-button-checking" : ""}`}
               type="button"
               onClick={() => void loadFindings("manual")}
-              disabled={isRefreshing}
+              disabled={isRefreshing || initialDataLoading}
               aria-label={isRefreshing ? `${checkTrigger === "manual" ? "Manual" : "Hourly"} check in progress` : "Run a manual security check"}
             >
               <span className="refresh-button-copy">
@@ -621,6 +648,7 @@ export default function Home() {
       </header>
 
       <div className="page-wrap" id="overview">
+        {initialDataLoading ? <DashboardSkeleton /> : <>
         <VulnerabilityTicker
           findings={findings.filter((finding) => !reviewedIds.has(finding.id))}
           mode={mode}
@@ -628,10 +656,10 @@ export default function Home() {
         />
 
         <section className="metrics-grid" aria-label="Current feed overview">
-          <div className="metric-card"><div className="metric-heading"><span>Open findings</span><ShieldCheck size={17}/></div><div className="metric-value-row"><strong>{String(openCount).padStart(2, "0")}</strong><div className="metric-mini-bars" aria-hidden="true">{platformOrder.map(platform => <i key={platform} style={{ height: `${5 + countFor(platform) / Math.max(1, openCount) * 38}px` }}/>)}</div></div><div className="metric-caption">Across all platforms<span>{findings.length} in current feed</span></div></div>
-          <div className="metric-card metric-critical"><div className="metric-heading"><span>Critical alerts</span><TriangleAlert size={17}/></div><div className="metric-value-row"><strong>{String(criticalCount).padStart(2, "0")}</strong><span className="critical-marker" aria-hidden="true"><CircleAlert size={30} strokeWidth={1.25}/></span></div><div className="metric-caption">{criticalCount ? "Priority review required" : "No critical findings open"}<span className="critical-tag">P1</span></div></div>
-          <div className="metric-card"><div className="metric-heading"><span>Platforms represented</span><Layers3 size={17}/></div><div className="metric-value-row"><strong>{String(platformsRepresented).padStart(2, "0")}<small>/04</small></strong><div className="metric-platform-dots" aria-hidden="true">{platformOrder.map(platform => <i key={platform} className={findings.some(f => f.platform === platform) ? 'represented' : ''}/>)}</div></div><div className="metric-caption">OS & AI security<span>Current feed</span></div></div>
-          <div className="metric-card"><div className="metric-heading"><span>Reviewed</span><CheckCircle2 size={17}/></div><div className="metric-value-row"><strong>{String(reviewedCount).padStart(2, "0")}</strong><span className="review-fraction">of {findings.length}</span></div><div className="metric-caption">This session{reviewedCount > 0 ? <button type="button" onClick={() => { setReviewedIds(new Set()); setAnnouncement("Reviewed findings restored to the queue."); }}>Reset reviews</button> : <span>Ready for triage</span>}</div></div>
+          <div className="metric-card"><div className="metric-heading"><span>Announcements</span><ShieldCheck size={17}/></div><div className="metric-value-row"><strong>{String(openCount).padStart(2, "0")}</strong><div className="metric-mini-bars" aria-hidden="true">{platformOrder.map(platform => <i key={platform} style={{ height: `${5 + countFor(platform) / Math.max(1, openCount) * 38}px` }}/>)}</div></div><div className="metric-caption">Across all platforms<span>{findings.length} in current feed</span></div></div>
+          <div className="metric-card metric-critical"><div className="metric-heading"><span>Critical Announcements</span><TriangleAlert size={17}/></div><div className="metric-value-row"><strong>{String(criticalCount).padStart(2, "0")}</strong><span className="critical-marker" aria-hidden="true"><CircleAlert size={30} strokeWidth={1.25}/></span></div><div className="metric-caption">{criticalCount ? "Priority review required" : "No critical findings open"}<span className="critical-tag">P1</span></div></div>
+          <div className="metric-card"><div className="metric-heading"><span>Platforms Monitored</span><Layers3 size={17}/></div><div className="metric-value-row"><strong>{String(platformsRepresented).padStart(2, "0")}<small>/04</small></strong><div className="metric-platform-dots" aria-hidden="true">{platformOrder.map(platform => <i key={platform} className={findings.some(f => f.platform === platform) ? 'represented' : ''}/>)}</div></div><div className="metric-caption">OS & AI security<span>Current feed</span></div></div>
+          <div className="metric-card metric-latest"><div className="metric-heading"><span>Latest Announcement</span><CalendarDays size={17}/></div><div className="metric-value-row"><strong>{latestPublicationDay ? <time dateTime={latestPublicationDay}>{latestPublicationLabel}</time> : latestPublicationLabel}</strong></div><div className="metric-caption">{latestPublicationDay ? "Publication date · all platforms" : "No publication dates available"}</div></div>
         </section>
 
         <div className="analytics-context"><span>Security Announcements History</span><span>{selectedPlatform === "all" ? "All platforms" : PLATFORM_META[selectedPlatform].label} · {mode === "partial" ? "Partial results" : mode === "live" ? "Latest results" : mode === "pending" ? "Awaiting results" : "No completed data"}</span></div>
@@ -664,7 +692,7 @@ export default function Home() {
                 <div className="platform-card-body">
                   <div className="platform-card-heading">
                     <span>{metadata.label}</span>
-                    <ArrowUpRight size={15} aria-hidden="true" />
+                    <Eye size={15} aria-hidden="true" />
                   </div>
                   <p><strong>{String(count).padStart(2, "0")}</strong><span>{count === 1 ? "open finding" : "open findings"}</span></p>
                   {report && <span className={`platform-coverage platform-coverage-${report.status}`} title={report.message}>{report.status === "running" ? "Checking" : report.status === "partial" ? "Partial coverage" : report.status === "no_changes" ? "No new announcements" : `${report.verified} newly verified`}</span>}
@@ -679,6 +707,7 @@ export default function Home() {
           <div className="section-heading">
             <div>
               <h2 id="findings-title">Security Announcements <span className="queue-count">{visibleFindings.length}</span></h2>
+              {reviewedCount > 0 && <button className="clear-filter" type="button" onClick={() => { setReviewedIds(new Set()); setAnnouncement("Reviewed findings restored to the queue."); }}>Reset reviews</button>}
             </div>
             {selectedPlatform !== "all" ? (
               <button className="clear-filter" type="button" onClick={() => setSelectedPlatform("all")}>
@@ -732,7 +761,6 @@ export default function Home() {
                         <span className="finding-summary">{finding.summary}</span>
                         <span className="finding-dates">
                           <span><strong>Published</strong><span>{formatSourceTimestamp(finding.publishedAt)}</span></span>
-                          <span><strong>Updated</strong><span>{formatSourceTimestamp(finding.updatedAt)}</span></span>
                           <span><strong>First discovered</strong><span>{finding.firstDiscoveredAt ? formatSourceTimestamp(sourceTimestamp(finding.firstDiscoveredAt)) : "Not recorded"}</span></span>
                         </span>
                       </span>
@@ -952,6 +980,7 @@ export default function Home() {
           <span><TriangleAlert size={14} aria-hidden="true" /> Findings are signals for review, not proof of compromise.</span>
           <span>NIMBLE <span className="footer-slash">/</span> WATCHTOWER</span>
         </footer>
+        </>}
       </div>
     </main>
   );
