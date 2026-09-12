@@ -29,9 +29,18 @@ export const PLATFORM_META: Record<Exclude<PlatformKey, "all">, {
 };
 
 export const SOURCE_CATALOG = [
+  { name: "Microsoft MSRC CVRF updates", url: "https://api.msrc.microsoft.com/cvrf/v3.0/updates" },
+  { name: "Debian security tracker", url: "https://security-tracker.debian.org/tracker/data/json" },
+  { name: "Ubuntu Security Notices", url: "https://ubuntu.com/security/notices/atom.xml" },
+  { name: "Red Hat CSAF advisories", url: "https://security.access.redhat.com/data/csaf/v2/advisories/" },
+  { name: "SUSE CSAF advisories", url: "https://ftp.suse.com/pub/projects/security/csaf/" },
+  { name: "Alpine SecDB", url: "https://secdb.alpinelinux.org/" },
   { name: "Apple security releases", url: "https://support.apple.com/en-us/100100" },
-  { name: "Microsoft MSRC", url: "https://msrc.microsoft.com/update-guide" },
-  { name: "Ubuntu notices", url: "https://ubuntu.com/security/notices" },
-  { name: "Red Hat advisories", url: "https://access.redhat.com/security/security-updates" },
-  { name: "OWASP prompt injection", url: "https://genai.owasp.org/llmrisk/llm01-prompt-injection/" },
+  { name: "Linux kernel CVE announcements", url: "https://lore.kernel.org/linux-cve-announce/" },
+  { name: "Fedora security updates", url: "https://bodhi.fedoraproject.org/updates/" },
+  { name: "OpenAI security disclosures", url: "https://openai.com/policies/coordinated-vulnerability-disclosure-policy/" },
+  { name: "Anthropic vulnerability disclosures", url: "https://www.anthropic.com/coordinated-vulnerability-disclosure" },
+  { name: "Google AI security disclosures", url: "https://bughunters.google.com/blog/announcing-googles-new-ai-vulnerability-reward-program" },
+  { name: "CISA Known Exploited Vulnerabilities", url: "https://www.cisa.gov/known-exploited-vulnerabilities-catalog" },
+  { name: "OWASP prompt injection guidance", url: "https://genai.owasp.org/llmrisk/llm01-prompt-injection/" },
 ];
