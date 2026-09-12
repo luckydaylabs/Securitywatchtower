@@ -583,7 +583,7 @@ export default function Home() {
             </div>
             <div className="brand-copy">
               <p className="brand-name">WATCHTOWER</p>
-              <p className="brand-subtitle">Get automatic notifications of security vulnerabilities across multiple platforms simultaneously.</p>
+              <p className="brand-subtitle">Get automatic notifications of security vulnerabilities<br className="subtitle-desktop-break" />{" "}across multiple platforms simultaneously.</p>
               <span className="brand-scope"><ScanLine size={13} aria-hidden="true" />macOS · Windows · Linux · AI</span>
             </div>
           </div>

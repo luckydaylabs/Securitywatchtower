@@ -379,6 +379,8 @@ h2 { margin-bottom: 0; font-size: 25px; font-weight: 760; letter-spacing: -0.035
 .brand-mark { display: none; }
 .brand-copy { display: grid; gap: 4px; min-width: 0; }
 .brand-subtitle { margin: 0; max-width: 28rem; font-size: .875rem; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+.subtitle-desktop-break { display: none; }
+@media (min-width: 641px) { .subtitle-desktop-break { display: initial; } }
 .brand-name { font-size: 14px; font-weight: 800; letter-spacing: .07em; }
 .brand-slash { padding: 0 16px; color: #aaa99f; font-weight: 400; }
 .brand-section { font-size: 13px; font-weight: 450; letter-spacing: 0; color: var(--muted); }
