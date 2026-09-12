@@ -5,7 +5,7 @@ import { sourceTimestamp, type AnnouncementDates } from "./announcement-dates";
 
 export type Announcement = AnnouncementDates & {
   id: string; sourceId: string; source: string; url: string; title: string;
-  sourceDate: string; platform: Finding["platform"]; evidence: string;
+  sourceDate: string; platform: Finding["platform"]; evidence: string; evidenceUrl?: string;
 };
 export type SourceCheckpoint = { etag?: string | null; last_modified?: string | null; succeeded_at?: string | null; documents_json?: string | null };
 export type SourceResult = { items: Announcement[]; etag: string | null; lastModified: string | null; unchanged: boolean; warning?: string; documentsJson?: string };
@@ -142,7 +142,8 @@ export async function collectSource(source: MonitorSource, checkpoint: SourceChe
   // Old checkpoints contain only a date window, not the full latest-five selection.
   // Ignore their validators once so older announcements are actually retrieved.
   const stored = checkpoint.documents_json ? JSON.parse(checkpoint.documents_json) : null;
-  const cached = stored?.policy === "latest-five-dates-v2" && Array.isArray(stored.items) ? stored : null;
+  const policy = source.id === "msrc" ? "latest-five-msrc-evidence-v3" : "latest-five-dates-v2";
+  const cached = stored?.policy === policy && Array.isArray(stored.items) ? stored : null;
   const headers: Record<string, string> = {};
   if (cached && checkpoint.etag) headers["If-None-Match"] = checkpoint.etag;
   if (cached && checkpoint.last_modified) headers["If-Modified-Since"] = checkpoint.last_modified;
@@ -165,13 +166,14 @@ export async function collectSource(source: MonitorSource, checkpoint: SourceChe
     for (const document of documents.slice(0, 5)) {
       const detail = await fetchSource(document.url);
       if (!detail.ok) throw new Error(`Microsoft advisory document returned HTTP ${detail.status}.`);
-      items = latestPerPlatform([...items, ...parseMicrosoftDocument(await boundedText(detail, 25_000_000), capturedUntil)]);
+      items = latestPerPlatform([...items, ...parseMicrosoftDocument(await boundedText(detail, 25_000_000), capturedUntil)
+        .map(item => ({ ...item, evidenceUrl: document.url }))]);
       if (items.length >= ANNOUNCEMENTS_PER_PLATFORM) break;
     }
     if (items.length < ANNOUNCEMENTS_PER_PLATFORM && documents.length > 5) warning = "Fewer than five Windows announcements were found in the five newest release documents; older documents were not checked.";
   }
   items = latestPerPlatform(items);
-  const documentsJson = JSON.stringify({ policy: "latest-five-dates-v2", items, warning });
+  const documentsJson = JSON.stringify({ policy, items, warning });
   return { items, etag: response.headers.get("etag"), lastModified: response.headers.get("last-modified"), unchanged: false, warning, documentsJson };
 }
 
@@ -186,13 +188,17 @@ export function parseMicrosoftDocument(body: string, until: string): Announcemen
     const revisions = list<any>(v.RevisionHistory).filter(r => !/acknowledg|credit|typo/i.test(r.Description?.Value ?? ""));
     const sourceDate = revisions.map(r => date(r.Date)).filter((x): x is string => Boolean(x)).sort().at(-1);
     if (!sourceDate || sourceDate > until) continue;
-    const evidence = JSON.stringify({ cve: v.CVE, title: v.Title?.Value, products: products.slice(0, 12).map(id => windows.get(id)),
-      revisions: revisions.slice(-3), notes: list<any>(v.Notes).slice(0, 3), threats: list<any>(v.Threats).slice(0, 4), remediations: list<any>(v.Remediations).slice(0, 3) });
+    const evidence = JSON.stringify({ cve: v.CVE,
+      threats: list<any>(v.Threats).slice(0, 4).map(t => ({ type: t.Type, description: plainText(t.Description?.Value ?? "").slice(0, 180) })),
+      products: products.slice(0, 12).map(id => windows.get(id)),
+      productsTruncated: products.length > 12,
+      notes: list<any>(v.Notes).slice(0, 2).map(n => plainText(n.Value ?? "").slice(0, 350)),
+      remediations: list<any>(v.Remediations).slice(0, 2).map(r => ({ description: plainText(r.Description?.Value ?? "").slice(0, 180), url: String(r.URL ?? "").slice(0, 300) })) });
     const ordered = list<any>(v.RevisionHistory).filter(r => date(r.Date)).sort((a, b) => date(a.Date)!.localeCompare(date(b.Date)!));
     const latest = [...revisions].filter(r => date(r.Date)).sort((a, b) => date(a.Date)!.localeCompare(date(b.Date)!)).at(-1);
     const initial = /initial|first publish|original release|information published/i.test(ordered[0]?.Description?.Value ?? "") || String(ordered[0]?.Number) === "1.0";
     output.push({ id: `msrc:${v.CVE}`, sourceId: "msrc", source: "Microsoft Windows advisories", title: v.Title?.Value ?? v.CVE,
-      url: `https://msrc.microsoft.com/update-guide/vulnerability/${v.CVE}`, sourceDate, platform: "windows", evidence: evidence.slice(0, 4000),
+      url: `https://msrc.microsoft.com/update-guide/vulnerability/${v.CVE}`, sourceDate, platform: "windows", evidence,
       // Only an explicitly initial revision establishes publication; the earliest
       // retained revision alone is not proof of the original publication date.
       publishedAt: initial ? sourceTimestamp(ordered[0].Date) : undefined,

@@ -15,6 +15,48 @@ const finding = { id: item.id, source: item.source, sourceUrl: item.url, platfor
 const originalFetch = globalThis.fetch;
 process.env.NIMBLE_API_KEY = "test-placeholder-not-a-real-key";
 
+test("Verified platform findings publish while another runs, survive reload and failures, and finalize once", async () => {
+  resetDatabase();
+  const db = getDatabase();
+  const scan: any = await startScan("manual");
+  const candidate = { ...item, versionId: "progressive-linux" };
+  await db.prepare("INSERT INTO watchtower_announcements(version_id,advisory_id,source_id,content_hash,source_date,first_seen_at,evidence_json,review_status) VALUES(?,?,?,?,?,?,?,?)")
+    .bind(candidate.versionId, item.id, item.sourceId, "hash", item.sourceDate, since, JSON.stringify(item), "pending").run();
+  const state = { trigger: "manual", until, candidates: [candidate], sources: MONITOR_SOURCES.map(s => ({ id: s.id, status: "checked", count: 1 })), runsStarted: 8, jobs: [
+    { id: "linux", platform: "linux", stage: "verifier", status: "running", candidates: [candidate], investigated: [finding], payload: { findings: [finding] } },
+    { id: "windows", platform: "windows", stage: "investigator", status: "running", candidates: [], nextPollAt: Date.now() + 100000 },
+    { id: "macos", platform: "macos", stage: "verifier", status: "blocked", candidates: [], error: "Invalid severity" },
+  ] };
+  await db.prepare("UPDATE watchtower_scans SET stage='investigator',state_json=? WHERE id=?").bind(JSON.stringify(state), scan.runId).run();
+  const partial: any = await advanceScan(scan.runId);
+  assert.equal(partial.status, "running");
+  assert.equal(partial.findings.length, 1);
+  assert.equal(partial.platformReports.find((p: any) => p.platform === "macos").status, "partial");
+  assert.equal(partial.platformReports.find((p: any) => p.platform === "linux").status, "checked");
+  assert.equal((await dashboardFeed()).findings.length, 1);
+  assert.equal((await advanceScan(scan.runId)).findings.length, 1);
+  const saved = JSON.parse((await db.prepare("SELECT state_json FROM watchtower_scans WHERE id=?").bind(scan.runId).first()).state_json);
+  assert.equal(saved.jobs[0].published, true);
+  saved.jobs[1].status = "blocked";
+  await db.prepare("UPDATE watchtower_scans SET state_json=? WHERE id=?").bind(JSON.stringify(saved), scan.runId).run();
+  const finished = await advanceScan(scan.runId);
+  assert.equal(finished.status, "completed");
+  assert.equal(finished.findings.length, 1);
+  assert.equal(finished.history.length, 1);
+  assert.equal((await advanceScan(scan.runId)).history.length, 1);
+});
+
+test("Windows verification retains valid structured severity evidence and official document URL", () => {
+  const windows = { ...item, id: "msrc:CVE-2026-1234", sourceId: "msrc", platform: "windows" as const,
+    url: "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-1234",
+    evidenceUrl: "https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/2026-Sep",
+    evidence: JSON.stringify({ cve: "CVE-2026-1234", threats: [{ type: 3, description: "Important" }], products: Array(20).fill("Windows 11") }) };
+  const prompt = researchInput("windows", "verifier", [windows]);
+  const packet = JSON.parse(prompt.split("EVIDENCE:\n")[1]);
+  assert.equal(packet[0].officialDocumentUrl, windows.evidenceUrl);
+  assert.equal(JSON.parse(packet[0].capturedEvidence).threats[0].description, "Important");
+});
+
 test("Source timestamps preserve date-only precision, real midnight, offsets, and unknown timezones", () => {
   assert.equal(formatSourceTimestamp(sourceTimestamp("6 August 2026")), "Aug 6, 2026 (time not provided)");
   assert.equal(formatSourceTimestamp(sourceTimestamp("2026-08-06T00:00:00Z")), "Aug 6, 2026, 00:00:00 UTC");

@@ -391,6 +391,9 @@ export default function Home() {
         const payload = (await response.json()) as FeedResponse;
 
         if (cancelled) return;
+        // A running or partially failed check can already contain newly saved findings.
+        if (Array.isArray(payload.findings)) setFindings(payload.findings);
+        if (payload.trust) setTrust(payload.trust);
         if (payload.sourceStatuses) setSourceStatuses(payload.sourceStatuses);
       if (payload.platformReports) setPlatformReports(payload.platformReports);
       if (typeof payload.runsStarted === "number") setResearchUsage({ used: payload.runsStarted, budget: payload.runBudget ?? 8 });

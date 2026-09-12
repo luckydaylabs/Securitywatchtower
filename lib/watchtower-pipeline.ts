@@ -164,6 +164,7 @@ async function advancePlatformResearch(scan: ScanRow, state: ScanState) {
     } catch (error) { job.status = "blocked"; job.error = error instanceof Error ? error.message : "Saved result needs review."; }
   }
   await save(scan, state);
+  await publishCompletedJobs(scan, state);
   const selected = nextPlatformJobs(jobs);
   let available = CHECK_RUN_BUDGET - (state.runsStarted ?? 0);
   // Reserve verification capacity before starting additional research batches.
@@ -230,6 +231,29 @@ async function advancePlatformResearch(scan: ScanRow, state: ScanState) {
     sources: Array.from(new Map(traces.flatMap(j => j.trust!.sources).map(s => [s.url, s])).values()),
     claims: traces.flatMap(j => j.trust!.claims.map(c => ({ ...c, researchJob: j.id, platform: j.platform }))) };
   await publish(scan, state, verified);
+}
+
+// Commit each verified batch independently, before waiting on other platforms.
+// Findings and the publication marker share a transaction, making retries safe.
+async function publishCompletedJobs(scan: ScanRow, state: ScanState) {
+  const completed = state.jobs!.filter(job => job.status === "done" && !job.published);
+  if (!completed.length) return;
+  const nextState = { ...state, jobs: state.jobs!.map(job => completed.includes(job) ? { ...job, published: true } : job) };
+  const statements: D1PreparedStatement[] = [];
+  for (const job of completed) {
+    const accepted = new Map((job.verified ?? []).map(f => [f.id, f]));
+    if ([...accepted.keys()].some(id => !job.investigated?.some(f => f.id === id) || !job.candidates.some(c => c.id === id))) {
+      throw new Error("Cannot publish an uninvestigated announcement.");
+    }
+    for (const item of job.candidates) statements.push(write(scan.lease,
+      "UPDATE watchtower_announcements SET review_status=?,finding_json=?,scan_id=? WHERE version_id=?")
+      .bind(accepted.has(item.id) ? "accepted" : "rejected", accepted.has(item.id) ? JSON.stringify(accepted.get(item.id)) : null, scan.id, item.versionId));
+  }
+  statements.push(write(scan.lease, "UPDATE watchtower_scans SET state_json=?,updated_at=? WHERE id=?")
+    .bind(JSON.stringify(nextState), now(), scan.id), assertLease(scan.lease!));
+  await getDatabase().batch(statements);
+  for (const job of completed) job.published = true;
+  scan.state_json = JSON.stringify(state);
 }
 
 async function currentFindings(): Promise<Finding[]> {
@@ -366,8 +390,8 @@ function platformReports(state: ScanState, running: boolean): PlatformReport[] {
     const pending = jobs.some(j => j.status === "ready" || j.status === "running" || j.status === "blocked");
     const sourcePartial = sources.length !== sourceIds[platform].length || sources.some(s => s.status !== "checked");
     const verified = jobs.flatMap(j => j.verified ?? []).length;
-    const status = running && (pending || sources.length !== sourceIds[platform].length) ? "running" : sourcePartial || pending ? "partial" : verified ? "checked" : "no_changes";
     const failure = jobs.find(j => j.error)?.error;
+    const status = failure ? "partial" : running && (pending || sources.length !== sourceIds[platform].length) ? "running" : sourcePartial || pending ? "partial" : verified ? "checked" : "no_changes";
     return { platform, status, verified, message: status === "running" ? "Check in progress" : status === "partial"
       ? failure ?? (pending ? "Additional announcements await research" : "Source coverage is incomplete")
       : verified ? `${verified} announcements verified in this check` : "No new supported announcements in the checked sources" };
@@ -376,10 +400,18 @@ function platformReports(state: ScanState, running: boolean): PlatformReport[] {
 async function scanResponse(scan: ScanRow) {
   const state: ScanState = JSON.parse(scan.state_json);
   const feed = await savedFeed();
+  const findings = await currentFindings();
+  const completed = state.jobs?.filter(j => j.published && j.stage === "verifier" && j.trust) ?? [];
+  const trust = completed.length ? {
+    reasoning: "Evidence from platform verification runs published so far; other platforms may still be running.",
+    sources: Array.from(new Map(completed.flatMap(j => j.trust!.sources).map(s => [s.url, s])).values()),
+    claims: completed.flatMap(j => j.trust!.claims.map(c => ({ ...c, researchJob: j.id, platform: j.platform }))),
+  } : feed.trust;
   return { ...feed, mode: scan.status === "blocked" ? "fallback" : "pending", status: scan.status === "blocked" ? "failed" : "running",
+    findings, trust,
     scanId: scan.id, runId: scan.id, agentId: "watchtower", stage: scan.stage, startedAt: scan.started_at, trigger: state.trigger,
     platformReports: platformReports(state, scan.status === "running"), runsStarted: state.runsStarted ?? 0,
-    message: scan.error ?? "Check in progress. Previously saved announcements remain available.", resumable: true };
+    message: scan.error ?? "Check in progress. Verified announcements are saved and displayed as each platform finishes.", resumable: true };
 }
 export async function dashboardFeed(snapshotId?: string) {
   if (snapshotId) return savedFeed(snapshotId);

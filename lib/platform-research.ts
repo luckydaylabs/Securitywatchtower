@@ -11,6 +11,7 @@ export type ResearchJob = {
   run?: ResearchRun; submission?: boolean; nextPollAt?: number;
   payload?: unknown; investigated?: Finding[]; verified?: Finding[];
   rejectedIds?: string[]; trust?: NimbleTrust; error?: string;
+  published?: boolean;
   outputs?: Array<{ stage: ResearchStage; run: ResearchRun; payload: unknown; trust?: NimbleTrust }>;
 };
 
