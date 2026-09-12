@@ -44,7 +44,8 @@ async function errorResponse(response: Response): Promise<Error> {
       detail = typeof data.error === "string" ? data.error : typeof data.error?.message === "string" ? data.error.message : typeof data.detail?.message === "string" ? data.detail.message : typeof data.detail?.error === "string" ? data.detail.error : typeof data.detail === "string" ? data.detail : Array.isArray(data.detail)
         ? data.detail.slice(0, 3).map((d: any) => `${Array.isArray(d?.loc) ? d.loc.join(".") : "request"}: ${typeof d?.msg === "string" ? d.msg : d?.type ?? "invalid value"}`).join("; ")
         : typeof data.message === "string" ? data.message : `Validation envelope fields: ${Object.keys(data).slice(0, 8).join(", ")}`;
-      detail = detail.replaceAll(config().key, "[redacted]").replace(/[a-f0-9]{48,}/gi, "[redacted]").replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 400);
+      const validation = JSON.stringify(data, (key, value) => /input|prompt|skill|secret|token|headers|authorization|ctx/i.test(key) ? "[omitted]" : typeof value === "string" ? value.slice(0, 300) : value);
+      detail = `${detail}; ${validation}`.replaceAll(config().key, "[redacted]").replace(/[a-f0-9]{48,}/gi, "[redacted]").replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 1500);
     } catch { /* A malformed error response must not obscure the HTTP status. */ }
   }
   return Object.assign(new Error(`Nimble returned HTTP ${response.status}.${detail ? ` ${detail}` : ""} ${response.status === 429 ? "Trial usage or rate limit reached; no automatic retry was started." : response.status === 401 || response.status === 403 ? "Check the configured API key." : "The saved check can be resumed."}`), response.status >= 500 ? { retryable: true } : {});
