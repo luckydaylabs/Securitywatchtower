@@ -41,9 +41,9 @@ async function errorResponse(response: Response): Promise<Error> {
   if (response.status === 400 || response.status === 422) {
     try {
       const data: any = await boundedJson(response, 32000);
-      detail = typeof data.detail === "string" ? data.detail : Array.isArray(data.detail)
+      detail = typeof data.error === "string" ? data.error : typeof data.error?.message === "string" ? data.error.message : typeof data.detail?.message === "string" ? data.detail.message : typeof data.detail?.error === "string" ? data.detail.error : typeof data.detail === "string" ? data.detail : Array.isArray(data.detail)
         ? data.detail.slice(0, 3).map((d: any) => `${Array.isArray(d?.loc) ? d.loc.join(".") : "request"}: ${typeof d?.msg === "string" ? d.msg : d?.type ?? "invalid value"}`).join("; ")
-        : typeof data.message === "string" ? data.message : "";
+        : typeof data.message === "string" ? data.message : `Validation envelope fields: ${Object.keys(data).slice(0, 8).join(", ")}`;
       detail = detail.replaceAll(config().key, "[redacted]").replace(/[a-f0-9]{48,}/gi, "[redacted]").replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 400);
     } catch { /* A malformed error response must not obscure the HTTP status. */ }
   }
