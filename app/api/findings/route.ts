@@ -824,11 +824,17 @@ function parseVerifierResult(payload: unknown) {
   const normalizedPayload = isRecord(payload) && Array.isArray(payload.checks)
     ? {
         ...payload,
-        checks: payload.checks.map((check) =>
-          isRecord(check) && typeof check.notes === "string"
-            ? { ...check, notes: clipStageText(check.notes, 1200) }
-            : check,
-        ),
+        checks: payload.checks.map((check) => {
+          if (!isRecord(check)) return check;
+
+          const notes = check.notes == null ? "No additional verification notes were provided." : check.notes;
+          return {
+            ...check,
+            notes: typeof notes === "string"
+              ? clipStageText(notes.trim() || "No additional verification notes were provided.", 1200)
+              : notes,
+          };
+        }),
       }
     : payload;
   const parsed = verifierResultSchema.safeParse(normalizedPayload);
