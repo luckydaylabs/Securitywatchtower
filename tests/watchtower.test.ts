@@ -66,6 +66,25 @@ test("Both research stages receive the unknown severity contract without paid ru
   assert.throws(() => validateResearch({ findings: [{ ...finding, severity: "invalid" }] }, [item]), /severity/);
 });
 
+test("Apple investigator and verifier must read full release pages without a supplied-CVE restriction", async () => {
+  const apple = { ...item, sourceId: "apple", platform: "macos" as const, id: "apple:123456", url: "https://support.apple.com/en-us/123456" };
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    const body = JSON.parse(String(init?.body));
+    assert.match(body.sources.prioritize, /read the full page/);
+    assert.match(body.sources.prioritize, /one comprehensive, concise record per supplied release ID/);
+    assert.match(body.sources.prioritize, /verifier must independently read/);
+    assert.doesNotMatch(body.sources.prioritize, /check supplied CVEs/i);
+    return Response.json({ id: "test-run", agent_id: "test-agent" });
+  };
+  try {
+    await startResearch("apple-test", "investigator", [apple], undefined, "macos");
+    await startResearch("apple-test", "verifier", [apple], undefined, "macos");
+    assert.equal(calls, 2);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("Windows verification retains valid structured severity evidence and official document URL", () => {
   const windows = { ...item, id: "msrc:CVE-2026-1234", sourceId: "msrc", platform: "windows" as const,
     url: "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-1234",
