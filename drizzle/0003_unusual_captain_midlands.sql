@@ -1,0 +1,1 @@
+ALTER TABLE `watchtower_sources` ADD `documents_json` text;

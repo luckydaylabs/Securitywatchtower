@@ -15,6 +15,20 @@
       "when": 1789196727354,
       "tag": "0001_pink_siren",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789201620296,
+      "tag": "0002_tricky_mole_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1789201688670,
+      "tag": "0003_unusual_captain_midlands",
+      "breakpoints": true
     }
   ]
 }

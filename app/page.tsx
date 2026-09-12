@@ -72,7 +72,11 @@ type FeedResponse = {
   context?: PipelineContext;
   pipelineStages?: PipelineStage[];
   runId?: string;
-  status?: "running" | "completed";
+  startedAt?: string;
+  trigger?: CheckTrigger;
+  sourceStatuses?: Array<{ id: string; status: string; error?: string }>;
+  pendingCount?: number;
+  status?: "running" | "completed" | "failed";
 };
 
 type ActiveRun = RunReference & { context: PipelineContext; startedAt: number };
@@ -84,18 +88,6 @@ const LAST_AUTOMATIC_CHECK_STORAGE_KEY = "watchtower.last-automatic-check";
 const HOURLY_MONITORING_INTERVAL_MS = 60 * 60 * 1000;
 const PIPELINE_INITIAL_POLL_DELAY_MS = 2_000;
 const PIPELINE_POLL_INTERVAL_MS = 15_000;
-const MAX_PIPELINE_WAIT_MS = 20 * 60 * 1000;
-
-function addPipelineContext(params: URLSearchParams, context: PipelineContext) {
-  for (const stage of pipelineStages) {
-    const reference = context[stage];
-    if (!reference) continue;
-    params.set(`${stage}AgentId`, reference.agentId);
-    params.set(`${stage}RunId`, reference.runId);
-  }
-  if (context.trigger) params.set("trigger", context.trigger);
-  if (context.baseline) params.set("baseline", JSON.stringify(context.baseline));
-}
 
 const severityLabels: Record<Severity, string> = {
   critical: "Critical",
@@ -192,6 +184,8 @@ export default function Home() {
   const [mode, setMode] = useState<FeedMode>("idle");
   const [lastChecked, setLastChecked] = useState<string>();
   const [trust, setTrust] = useState<NimbleTrust>();
+  const [sourceStatuses, setSourceStatuses] = useState<NonNullable<FeedResponse["sourceStatuses"]>>([]);
+  const [pendingCount, setPendingCount] = useState(0);
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
   const [hourlyMonitoringEnabled, setHourlyMonitoringEnabled] = useState<boolean | null>(null);
   const [checkTrigger, setCheckTrigger] = useState<CheckTrigger>("automatic");
@@ -215,11 +209,16 @@ export default function Home() {
     setMode("pending");
 
     try {
-      const response = await fetch(`/api/findings?trigger=${encodeURIComponent(trigger)}`, {
+      const response = await fetch("/api/findings", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trigger }),
         cache: "no-store",
       });
       const payload = (await response.json()) as FeedResponse;
+      if (Array.isArray(payload.findings)) setFindings(payload.findings);
+      if (payload.sourceStatuses) setSourceStatuses(payload.sourceStatuses);
+      if (typeof payload.pendingCount === "number") setPendingCount(payload.pendingCount);
 
       if (!response.ok) {
         throw new Error(payload.message ?? "The latest findings could not be loaded.");
@@ -253,7 +252,7 @@ export default function Home() {
         stage: payload.stage,
         runId: payload.runId,
         agentId: payload.agentId,
-        startedAt: Date.now(),
+        startedAt: payload.startedAt ? Date.parse(payload.startedAt) : Date.now(),
         context: payload.context ?? {
           monitor: { stage: "monitor", runId: payload.runId, agentId: payload.agentId },
         },
@@ -280,16 +279,25 @@ export default function Home() {
       const response = await fetch(endpoint, { cache: "no-store" });
       const payload = (await response.json()) as FeedResponse;
 
-      if (!response.ok) {
-        throw new Error(payload.message ?? "Saved check history could not be loaded.");
-      }
-
       if (Array.isArray(payload.history)) {
         setHistory(payload.history);
         setHistoryStatus(payload.history.length ? "ready" : "empty");
       }
       if (Array.isArray(payload.findings)) setFindings(payload.findings);
       setTrust(payload.trust);
+      if (payload.checkedAt) setLastChecked(payload.checkedAt);
+      if (payload.sourceStatuses) setSourceStatuses(payload.sourceStatuses);
+      if (typeof payload.pendingCount === "number") setPendingCount(payload.pendingCount);
+      if (!response.ok) throw new Error(payload.message ?? "Saved check history could not be loaded.");
+      if (payload.status === "running" && payload.runId && payload.agentId && payload.stage) {
+        setMode("pending");
+        setCheckTrigger(payload.trigger ?? "manual");
+        isRefreshingRef.current = true;
+        setIsRefreshing(true);
+        setActiveRun({ runId: payload.runId, agentId: payload.agentId, stage: payload.stage,
+          startedAt: payload.startedAt ? Date.parse(payload.startedAt) : Date.now(), context: {} });
+        return;
+      }
       if (payload.mode === "live") {
         setMode("live");
         if (payload.checkedAt) setLastChecked(payload.checkedAt);
@@ -300,8 +308,6 @@ export default function Home() {
         setTechnicalId(null);
       } else {
         setMode(payload.mode ?? "idle");
-        setFindings([]);
-        setLastChecked(undefined);
         setSelectedSnapshotId(undefined);
       }
     } catch (loadError) {
@@ -322,9 +328,9 @@ export default function Home() {
     const timer = window.setTimeout(() => {
       try {
         const storedPreference = window.localStorage.getItem(HOURLY_MONITORING_STORAGE_KEY);
-        setHourlyMonitoringEnabled(storedPreference !== "false");
+        setHourlyMonitoringEnabled(storedPreference === "true");
       } catch {
-        setHourlyMonitoringEnabled(true);
+        setHourlyMonitoringEnabled(false);
       }
     }, 0);
     return () => window.clearTimeout(timer);
@@ -374,22 +380,17 @@ export default function Home() {
 
     async function pollRun() {
       try {
-        if (Date.now() - run.startedAt >= MAX_PIPELINE_WAIT_MS) {
-          throw new Error("The Nimble monitoring pipeline exceeded its 20-minute wait limit.");
-        }
-
-        const params = new URLSearchParams({
-          agentId: run.agentId,
-          runId: run.runId,
-          stage: run.stage,
-        });
-        addPipelineContext(params, run.context);
-        const response = await fetch(`/api/findings?${params.toString()}`, {
+        const response = await fetch("/api/findings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scanId: run.runId }),
           cache: "no-store",
         });
         const payload = (await response.json()) as FeedResponse;
 
         if (cancelled) return;
+        if (payload.sourceStatuses) setSourceStatuses(payload.sourceStatuses);
+        if (typeof payload.pendingCount === "number") setPendingCount(payload.pendingCount);
 
         if (response.status === 202 || payload.status === "running" || payload.mode === "pending") {
           setAnnouncement(payload.message ?? "Nimble research is still running.");
@@ -412,10 +413,19 @@ export default function Home() {
         }
 
         if (!response.ok) {
-          throw new Error(payload.message ?? "The Nimble monitoring run could not be read.");
+          if (payload.status === "failed") {
+            setActiveRun(null);
+            isRefreshingRef.current = false;
+            setIsRefreshing(false);
+            setMode("fallback");
+            setError(payload.message ?? "The saved check needs attention.");
+            return;
+          }
+          throw new Error("Connection interrupted. The saved check will be resumed.");
         }
 
         if (Array.isArray(payload.findings)) setFindings(payload.findings);
+        setTrust(payload.trust);
         if (Array.isArray(payload.history)) {
           setHistory(payload.history);
           setHistoryStatus(payload.history.length ? "ready" : "empty");
@@ -433,12 +443,8 @@ export default function Home() {
         setIsRefreshing(false);
       } catch (pollError) {
         if (cancelled) return;
-        setActiveRun(null);
-        isRefreshingRef.current = false;
-        setIsRefreshing(false);
-        setMode("fallback");
-        setError(pollError instanceof Error ? pollError.message : "The Nimble monitoring run could not be read.");
-        setAnnouncement("The security check could not be completed. No new findings were loaded.");
+        setAnnouncement(pollError instanceof Error ? pollError.message : "Reconnecting to the saved check.");
+        timer = window.setTimeout(() => void pollRun(), PIPELINE_POLL_INTERVAL_MS);
       }
     }
 
@@ -871,6 +877,8 @@ export default function Home() {
           <div className="sources-heading"><Radio size={17}/><h2 id="sources-title">Source catalog</h2><span>{SOURCE_CATALOG.length}</span></div>
           <p className="sources-description">Authoritative advisories used by the research agent.</p>
           <div className="source-cards">{SOURCE_CATALOG.map((source, index) => <a key={source.name} href={source.url} target="_blank" rel="noopener noreferrer"><span className="source-number">0{index + 1}</span><span>{source.name}</span><ExternalLink size={13}/></a>)}</div>
+          {pendingCount > 0 && <p className="source-note">{pendingCount} new or changed announcements awaiting review. Each check reviews up to three.</p>}
+          {sourceStatuses.filter(source => source.status !== "checked").map(source => <p className="source-note" key={source.id}>{SOURCE_CATALOG.find(item => item.id === source.id)?.name}: {source.error ?? "Coverage is incomplete."}</p>)}
           {trust ? (
             <section className="trust-panel" aria-labelledby="trust-title">
               <div className="trust-heading">

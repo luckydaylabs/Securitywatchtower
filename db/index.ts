@@ -2,6 +2,11 @@ import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./schema";
 
+export function getDatabase(): D1Database {
+  if (!env.DB) throw new Error("Saved monitoring data is temporarily unavailable.");
+  return env.DB;
+}
+
 export function getDb() {
   if (!env.DB) {
     throw new Error(

@@ -29,17 +29,23 @@ Local tool usage metrics are disabled by default. Set `WRANGLER_SEND_METRICS=tru
 
 ## Nimble Agent Feed
 
-The active findings route uses Nimble Web Search Agent API V2 from the server-only `/api/findings` route. A refresh starts a named or fixed-agent run immediately; the browser then polls a separate status request until Nimble finishes, retrieves the structured result, preserves safe trust-source metadata, and validates every finding before returning it to the dashboard.
+The server collects a bounded catalog of five official sources: Microsoft Windows advisories, Ubuntu Security Notices, Apple security releases, the Anthropic disclosure ledger, and OpenAI's public trust disclosures. Linux coverage is Ubuntu-specific, not every distribution. Compliance reports and unrelated AI-discovered software bugs are not treated as AI-platform vulnerabilities. Missing or partial source coverage is shown in Sources.
 
-The monitor stage performs a broad research sweep across multiple authoritative source groups. The investigation, verification, and orchestration stages then process its structured output. This workload can take several minutes; while the pipeline is in progress, the dashboard keeps the last completed snapshot visible and labels the current check as pending.
+First checks consider the most recent 72 hours. Later checks use each source's successful checkpoint with a six-hour overlap and content hashes to avoid researching unchanged announcements. Microsoft dates come from individual Windows advisory revisions, not the whole monthly document; revised documents are queued durably and processed one per check. Finite feeds may not cover an entire requested interval: this is reported explicitly rather than interpreted as an absence of threats.
 
-The monitor source policy is ordered around primary advisory feeds: Microsoft MSRC CVRF, Debian advisories and tracker data, Ubuntu Security Notices, Red Hat advisories and CSAF, SUSE CSAF, Alpine release JSON, Apple security releases and announcement archives, Linux kernel CVE announcements, and Fedora Bodhi RSS. It also permits OpenAI and Anthropic security disclosures, Google AI security disclosures, CISA's KEV JSON feed, NVD, OSV, and OWASP AI guidance when those sources directly support a finding. Human-readable pages remain available for review, but automation prefers machine-readable feeds where the source provides them. The route sends this allowlist and priority order to every Nimble pipeline stage and accepts output URLs only from the approved domains.
+Each check processes at most three new or changed announcements using two Nimble API V2 runs: a bounded investigator followed by an independent verifier. If nothing needs review, no Nimble run is created. Exact advisory URLs and captured evidence are supplied; orchestration, validation, routing, and persistence run in application code. The 9,500-character input guard is an application safeguard, not a documented Nimble limit.
 
-Configure NIMBLE_API_KEY as a secret in the Site runtime environment. Set NIMBLE_MONITOR_AGENT_ID, NIMBLE_INVESTIGATOR_AGENT_ID, NIMBLE_VERIFIER_AGENT_ID, and NIMBLE_ORCHESTRATOR_AGENT_ID to the fixed Security Watchtower agents. The legacy NIMBLE_AGENT_ID and NIMBLE_AGENT_NAME values remain supported for the monitor role. Never expose the API key through client-side environment variables.
+Configure `NIMBLE_API_KEY` as a secret in the Site runtime environment. Optional `NIMBLE_INVESTIGATOR_AGENT_ID` and `NIMBLE_VERIFIER_AGENT_ID` select existing agents. Monitor and orchestrator agent IDs are no longer used. Never expose the API key through client-side environment variables.
 
 Live refreshes are available to normal same-origin browser sessions so reviewers can use the public Site. The route rejects missing or clearly automated clients, but this is a best-effort filter rather than human verification. If the key is absent or a provider request fails, the dashboard returns an unavailable state; a completed snapshot already in the browser remains visible while the new check is retried.
 
-Each refresh runs four Nimble stages in sequence: monitor authoritative sources, investigate candidate alerts, independently verify the evidence, and orchestrate the final dashboard payload. Only the final stage can publish findings to `/api/findings`, and the server rejects untrusted source URLs, invalid timestamps, duplicate IDs, incomplete records, and unsupported platforms or severities. The pipeline is on demand; no background schedule is configured by default.
+Cloudflare D1 stores active scans, provider references and raw results, announcement versions, source checkpoints, and completed snapshots. An expiring, fenced database lease serializes advancement across viewers. Refreshing the page resumes the same scan. Completed output is stored before validation so recovery can reuse paid research. An uncertain submission blocks automatic resubmission to avoid duplicate charges; an operator must reconcile its provider identifiers. Explicitly rejected submissions can be resumed manually.
+
+No-change checks retain previous findings and append check history. Findings are versioned rather than deleted; rejected revisions do not overwrite the last accepted record. Historical accepted records should not be interpreted as proof that an advisory remains active today. Queued candidates are processed newest first, up to three per check; a previously captured candidate can be reviewed after its original collection window.
+
+The hourly toggle is off by default and runs only while a dashboard remains open. `/api/internal/scans/advance` can continue an existing saved scan when called by an external scheduler using `Authorization: Bearer <WATCHTOWER_SCHEDULER_SECRET>`. Neither the endpoint nor deployment provisions a scheduler. Unattended execution with all dashboards closed requires separately configuring one. Browser polling has no global 20-minute cutoff.
+
+Run `node scripts/test-watchtower.mjs` for offline source, provider-contract, and SQLite persistence tests. These use synthetic fixtures and never consume Nimble credits.
 
 ## Included Shape
 
@@ -48,7 +54,7 @@ Each refresh runs four Nimble stages in sequence: monitor authoritative sources,
 - `.openai/hosting.json` declares optional Sites D1 and R2 bindings
 - `vite.config.ts` provides declared binding shims for local development
 - `db/index.ts` reads the D1 binding from the Cloudflare Worker environment
-- `db/schema.ts` starts intentionally empty
+- `db/schema.ts` defines snapshots, scans, source checkpoints, announcement versions, and the scan lease
 - `@cloudflare/workers-types` provides Worker types; `cloudflare-env.d.ts` declares optional `DB`/`BUCKET` bindings—update these declarations if binding names change
 - `examples/d1/` contains an optional D1 example surface
 - `drizzle.config.ts` supports local migration generation when needed
