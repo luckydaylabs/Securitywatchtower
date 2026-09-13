@@ -1,6 +1,6 @@
 # Security Watchtower
 
-Security Watchtower brings security announcements from Apple, Microsoft, Ubuntu, OpenAI, and Anthropic into one dashboard. It helps teams understand what changed, which systems are affected, and what to review next.
+Frankly speaking, Security Watchtower brings security announcements from Apple, Microsoft, Ubuntu, OpenAI, and Anthropic into one dashboard. It helps teams understand what changed, which systems are affected, and what to review next.
 
 [Open the dashboard](https://nimble-security-watchtower.andyo-mp3.chatgpt.site/)
 
