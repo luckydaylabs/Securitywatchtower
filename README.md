@@ -42,6 +42,8 @@ OpenAI and Anthropic share the five-announcement AI selection. Saved history can
 
 ## For developers
 
+Want your own version? Start with the [agent-first setup guide](docs/create-your-own.md): prerequisites, required tools, and copyable prompts for Codex with Sites or Claude Code with independent hosting.
+
 Built with React, TypeScript, Vinext, Cloudflare D1, and Nimble. The complete application requires database configuration and a server-side Nimble API key.
 
 See the [development and configuration guide](docs/development.md) for setup instructions, storage details, research behavior, and test commands. Never commit API keys or other credentials.
