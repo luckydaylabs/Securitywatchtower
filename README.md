@@ -1,141 +1,47 @@
 # Security Watchtower
 
-A full-stack security intelligence dashboard running on [vinext](https://github.com/cloudflare/vinext), with Nimble Web Search Agents and optional Cloudflare D1 and Drizzle support.
+Security Watchtower brings security announcements from Apple, Microsoft, Ubuntu, OpenAI, and Anthropic into one dashboard. It helps teams understand what changed, which systems are affected, and what to review next.
 
-## Prerequisites
+[Open the dashboard](https://nimble-security-watchtower.andyo-mp3.chatgpt.site/)
 
-- Node.js `>=22.13.0`
-- Windows, macOS, or Linux; Git is required only for publishing, and Bash is not required for initialization or the project commands
+## What you can do
 
-## Sites Lifecycle
+- Review macOS, Windows, Ubuntu Linux, and AI security announcements in one place.
+- See affected systems, publication dates, severity when available, and recommended next steps.
+- Follow links to official sources and filter announcements by platform.
+- Run a manual check or enable hourly checks while the dashboard is open.
+- Return to saved announcements and previous check results later.
 
-The bundled Sites initializer provisions the project and runs its locked dependency install before returning the checkout. Edit the source under `app/`, use `npm run dev` for the Codex local preview, and run the project validation before hosting. The remote Sites builder also runs `npm run build` against the pushed commit. Do not rerun the dependency install unless dependencies are absent or the lockfile changed.
+## How it works
 
-This project does not use `wrangler.jsonc`.
+1. Watchtower checks official sources and selects the five most recent eligible announcements per platform, without a date cutoff.
+2. Nimble agents research new or changed announcements. Different platforms can be researched at the same time.
+3. A separate verification step checks the summaries against official sources.
+4. Verified results are saved and appear in the dashboard as each platform finishes.
 
-`install:ci` runs `npm ci` once against this checkout's bundled lockfile, explicitly targeting the project and disabling parent-workspace discovery. It includes dev and optional dependencies required for builds and previews even when production/omit settings would exclude them. It defaults Sharp to prebuilt binaries unless the caller explicitly configures Sharp or a source build. It uses `--prefer-offline --no-audit --no-fund`, reuses the configured npm cache, and leaves network concurrency, retries, timeouts, and lifecycle-script policy to npm's configuration. Retain the installer session until it finishes; do not overlap installers for the same checkout.
+Unchanged announcements are reused instead of researched again. If a platform cannot finish, successful results from the others remain available and the dashboard reports the incomplete check.
 
-`scripts/sites-env.mjs` preserves the caller's HOME, npm cache, proxy, XDG, and temporary-directory configuration while defaulting Wrangler and Miniflare state to the checkout. If npm reports an unwritable cache, select a writable path with `npm_config_cache` for that install. The `dev` and `start` scripts also keep Wrangler logs inside the checkout. Generated `.sites-runtime/` and `.wrangler/` directories are disposable and ignored by Git.
+## What it covers
 
-`npm run dev` uses `vinext dev` for the live Vite preview with HMR, starting at port 5173. Vinext records the running server in ignored `.vinext/` state and rejects another start for the same checkout while that process is alive; reuse its printed URL. It recovers stale state after a stopped process. Pass `--port <port>` or `--hostname <host>` after `npm run dev --` when needed; keep Codex previews on loopback. Like the Sites package, this relies on Vinext's advisory lock; exactly simultaneous starts can race.
+| Platform | Coverage |
+| --- | --- |
+| macOS | Apple security releases, including relevant Safari updates |
+| Windows | Microsoft security advisories |
+| Linux | Ubuntu Security Notices—not every Linux distribution |
+| AI | Public OpenAI and Anthropic security announcements, incident reports, and research |
 
-The bundled Sites Vite plugin provides ChatGPT sign-in fixtures only for loopback development requests. Visit `/signin-with-chatgpt?return_to=/` to sign in as `local_seedy` (`seedy@sites.test`, display name `Seedy`) and `/signout-with-chatgpt?return_to=/` to sign out. The development cookie preserves that identity across server restarts. This does not exercise real ChatGPT OAuth and is not included in production builds; hosted authentication remains dispatch-owned.
+OpenAI and Anthropic share the five-announcement AI selection. Saved history can contain more than five announcements per platform.
 
-The Worker uses `vinext/server/fetch-handler`, including Vinext's config-aware image handling. After building, `npm start` runs that Worker locally through Wrangler on `127.0.0.1`, sharing `.wrangler/state` with dev preview and local D1 migrations; it does not deploy the Site or enable local sign-in. Use the URL printed by the server. Pass `npm start -- --port <port>` to select a different built-preview port.
+## Important limits
 
-Local previews use Miniflare's placeholder `Request.cf` metadata without a network lookup. Set `CLOUDFLARE_CF_FETCH_ENABLED=true` to opt into fetching preview metadata; this setting does not change hosted request metadata.
+- Watchtower summarizes public announcements. It does not scan your devices or confirm whether your organization is affected.
+- Missing severity is shown as unknown, not low risk.
+- Hourly checks require an open dashboard. Unattended checks need additional setup.
+- Research consumes Nimble agent runs; usage depends on the new or changed information being reviewed.
+- Publication dates and the date Watchtower first discovered an announcement are shown separately.
 
-Local tool usage metrics are disabled by default. Set `WRANGLER_SEND_METRICS=true` to opt in.
+## For developers
 
-## Nimble Agent Feed
+Built with React, TypeScript, Vinext, Cloudflare D1, and Nimble. The complete application requires database configuration and a server-side Nimble API key.
 
-The server collects five publisher groups: Microsoft Windows advisories, Ubuntu Security Notices, Apple security releases, Anthropic News plus Threat Intelligence, and OpenAI public news and security research (discovered through the official news RSS feed). Both AI research stages read full selected articles and directly linked official research reports. They distinguish product vulnerabilities, security incidents, and security research using `signalType`; no CVE is required for a supported incident or research report. Model capability ratings are not vulnerability severity. Login-gated trust portals and the Anthropic disclosure ledger are no longer discovery sources. Old records remain in history but are excluded from new research selection. Linux coverage is Ubuntu-specific, not every distribution. Missing or partial source coverage is reported explicitly.
-
-Checks select the five most recent supported announcements per platform, with no age cutoff. macOS and Safari share the macOS selection; OpenAI and Anthropic share one five-item AI selection. Selection is ranked by the source's published or meaningful revision date, with stable advisory-ID ordering for ties. The latest five are selected before filtering out already processed versions, so repeated checks do not backfill older pending announcements. Content hashes prevent unchanged versions from consuming additional agent runs. Older accepted findings and snapshots remain in history.
-
-Publication and update timestamps are stored separately inside durable announcement/finding JSON, including original source text and date/minute/second precision. Zoned times display in UTC; unzoned times retain their source text with an explicit unknown-timezone label. Date-only announcements never display a fabricated midnight time. First discovery uses the earliest stored capture across versions of an advisory, not a publisher date or a later check time. Existing records without publication metadata show unknown fields; the next source collection can enrich an unchanged record without consuming another research run. Historical snapshots are retained. The legacy `detectedAt`/`source_date` field remains the published-or-updated sorting/chart value for compatibility, not a discovery timestamp. No database schema migration is required because these metadata fields use the existing durable JSON columns.
-
-Source caches retain the latest selection across HTTP 304 responses. Date-window checkpoints from older deployments are refreshed once without conditional headers, allowing older Apple announcements to be collected. Windows discovery reads the newest release documents first and stops after finding five individual Windows advisories; it does not queue every revised historical monthly document. At most five release documents are fetched per check, and insufficient coverage is reported explicitly. Dates still must be valid and not in the future; there is no lower-age threshold. Fewer than five supported announcements in a configured listing produces fewer results, not invented findings.
-
-Checks use separate macOS, Windows, Linux, and AI research lanes. Active platforms dispatch concurrently, with independent verification before findings are published. There is no three-announcement cap: batches are sized to the actual request, and verification can split a large result into smaller requests. A trial safeguard allows eight agent submissions per check, reserving capacity for verification; remaining announcements stay pending and coverage is reported as partial. Platforms without new evidence do not consume agent runs. Exact advisory URLs and captured evidence are supplied; orchestration, validation, routing, and persistence run in application code. The 9,500-character input guard is an application safeguard, not a documented Nimble limit.
-
-Configure `NIMBLE_API_KEY` as a secret in the Site runtime environment. Platform agents use stable names such as `security-watchtower-windows-investigator` and `security-watchtower-windows-verifier`. Optional `NIMBLE_<PLATFORM>_<STAGE>_AGENT_ID` values pin existing platform agents. Legacy unscoped IDs apply only to scans already started by the previous implementation. Never expose the API key through client-side environment variables.
-
-Live refreshes are available to normal same-origin browser sessions so reviewers can use the public Site. The route rejects missing or clearly automated clients, but this is a best-effort filter rather than human verification. If the key is absent or a provider request fails, the dashboard returns an unavailable state; a completed snapshot already in the browser remains visible while the new check is retried.
-
-Cloudflare D1 stores active scans, provider references and raw results, announcement versions, source checkpoints, and completed snapshots. An expiring, fenced database lease serializes advancement across viewers. Refreshing the page resumes the same scan. Completed output is stored before validation so recovery can reuse paid research. An uncertain submission blocks automatic resubmission to avoid duplicate charges; an operator must reconcile its provider identifiers. Explicitly rejected submissions can be resumed manually.
-
-No-change checks retain previous findings and append check history. Findings are versioned rather than deleted; rejected revisions do not overwrite the last accepted record. Historical accepted records should not be interpreted as proof that an advisory remains active today. Pending candidates remain eligible only while they are among their platform's latest five. Microsoft documents are ordered by release month so recently edited archive documents cannot precede current releases. Raw platform results and submission markers are saved before validation or further work, preventing automatic duplicate submissions after an uncertain response.
-
-The hourly toggle is off by default and runs only while a dashboard remains open. `/api/internal/scans/advance` can continue an existing saved scan when called by an external scheduler using `Authorization: Bearer <WATCHTOWER_SCHEDULER_SECRET>`. Neither the endpoint nor deployment provisions a scheduler. Unattended execution with all dashboards closed requires separately configuring one. Browser polling has no global 20-minute cutoff.
-
-Run `node scripts/test-watchtower.mjs` for offline source, provider-contract, and SQLite persistence tests. These use synthetic fixtures and never consume Nimble credits.
-
-## Included Shape
-
-- edit site code under `app/`
-- `app/chatgpt-auth.ts` provides optional dispatch-owned ChatGPT sign-in helpers
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` provides declared binding shims for local development
-- `db/index.ts` reads the D1 binding from the Cloudflare Worker environment
-- `db/schema.ts` defines snapshots, scans, source checkpoints, announcement versions, and the scan lease
-- `@cloudflare/workers-types` provides Worker types; `cloudflare-env.d.ts` declares optional `DB`/`BUCKET` bindings—update these declarations if binding names change
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Use it as the durable user key; use email and name for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive `oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty `name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by `oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use the returned `userId` as the stable user key for user-owned records; do not use email as a durable identifier.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send anonymous visitors through Sign in with ChatGPT.
-- In a Server Component, start sign-in with `<a href={chatGPTSignInPath(returnTo)} target="_top">`. The auth helper module is server-only; do not import it into a Client Component.
-- Do not use `fetch`, XHR, a client-side router, or a framework link that can prefetch the sign-in route. SIWC must start as a top-level navigation.
-- Never request the AuthAPI authorization endpoint directly. The dispatch-owned `/signin-with-chatgpt` route must start the SIWC flow.
-- Use `chatGPTSignOutPath(returnTo)` for browser sign-out links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the OAuth cookies, and identity header injection. Do not implement app routes for those reserved paths. Routes that do not import and call the helper remain anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the Sites hosting platform's access policy controls for workspace-wide restrictions, or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Local D1 migrations
-
-For a D1-backed local preview, generate SQL with `npm run db:generate`. Build once through the Sites skill's build entrypoint (or `npm run build` for standalone use) to generate `dist/server/wrangler.json`, rebuilding if bindings change. From the project root, apply each pending migration in order:
-
-```sh
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_example.sql
-```
-
-Replace the filename with the pending migration and `DB` with your D1 binding name if different. Use `.wrangler/state`, not `.wrangler/state/v3`; Wrangler adds the versioned directories. Do not replay migrations already applied locally. This updates only the preview database; publishing applies production migrations separately.
-
-## Diagnostic Commands
-
-- `npm run install:ci`: perform the one locked dependency install
-- `npm run dev`: start the Vite/Vinext development server
-- `npm run build`: build the deployable Sites artifact
-- `npm run start`: preview the built Worker locally with D1/R2 support
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-When using the Sites plugin, follow its skill instructions for installation, builds, and publishing. These npm commands remain available for standalone use.
-
-Like the Sites package, `npm run build` runs `vinext build` directly; it does not require a host `timeout` command.
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+See the [development and configuration guide](docs/development.md) for setup instructions, storage details, research behavior, and test commands. Never commit API keys or other credentials.
