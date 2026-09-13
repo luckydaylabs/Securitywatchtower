@@ -65,6 +65,9 @@ export function unwrapOutput(payload: any, depth = 0): any {
   return payload;
 }
 export function validateResearch(payload: unknown, items: Announcement[]): Finding[] {
+  // Treat generated output as untrusted. Only records tied to supplied evidence
+  // may pass; source identity and dates are restored from application-owned data.
+  // The coordinator saves the raw response before this can throw, enabling review.
   const output = unwrapOutput(payload);
   if (!Array.isArray(output?.findings) || output.findings.length > items.length) throw new Error("Research returned an invalid findings list. Its result is saved for recovery.");
   const known = new Map(items.map(item => [item.id, item]));
@@ -127,6 +130,9 @@ export function researchInput(scanId: string, stage: ResearchStage, items: Annou
   return input;
 }
 export async function startResearch(scanId: string, stage: ResearchStage, items: Announcement[], findings?: Finding[], platform?: Finding["platform"]): Promise<ResearchRun> {
+  // Both stages receive the same schema and source restrictions on every run.
+  // These per-run settings also apply when an existing agent ID is configured;
+  // changing a stored agent's defaults alone is not sufficient to change a check.
   const agentId = process.env[`NIMBLE_${platform ? `${platform.toUpperCase()}_` : ""}${stage.toUpperCase()}_AGENT_ID`]?.trim();
   const urls = items.flatMap(item => [item.url, ...(item.evidenceUrl && approvedSourceUrl(item.evidenceUrl) ? [item.evidenceUrl] : [])]);
   const domains = [...new Set(urls.map(url => new URL(url).hostname))];

@@ -7,10 +7,13 @@ function respond(payload: Awaited<ReturnType<typeof dashboardFeed>>) {
     headers: { "Cache-Control": "no-store" } });
 }
 export async function GET(request: NextRequest) {
+  // Read-only: loading the dashboard must never create a billable research run.
   try { return respond(await dashboardFeed(request.nextUrl.searchParams.get("snapshotId") ?? undefined)); }
   catch { return NextResponse.json({ mode: "fallback", status: "failed", message: "Saved results could not be read. Please retry." }, { status: 503 }); }
 }
 export async function POST(request: NextRequest) {
+  // A scanId advances existing work; without it, startScan creates or reuses a
+  // check. This origin/client filter is best-effort, not authentication or a quota.
   const origin = request.headers.get("origin");
   if (!origin || origin !== request.nextUrl.origin || /bot|crawler|spider|headless/i.test(request.headers.get("user-agent") ?? "")) {
     return NextResponse.json({ message: "Checks must be requested from this dashboard." }, { status: 403 });

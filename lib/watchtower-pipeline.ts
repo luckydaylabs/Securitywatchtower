@@ -1,3 +1,10 @@
+/**
+ * Durable check coordinator. A request advances saved work rather than running the
+ * entire check in memory: collect sources → investigate → verify → publish.
+ * The database is authoritative, so page reloads and multiple viewers share one scan.
+ * Provider calls may cost money; preserve submission markers and raw responses when
+ * changing transitions so an interrupted request cannot silently repeat a paid run.
+ */
 import { getDatabase } from "../db";
 import { MONITOR_SOURCES } from "./source-config";
 import { ANNOUNCEMENTS_PER_PLATFORM, collectSource, fingerprint, readEvidence, type Announcement, type SourceCheckpoint } from "./source-monitor";
@@ -30,6 +37,8 @@ const historyRow = (row: SnapshotRow): SnapshotHistory => ({ id: row.id, checked
   findingCount: row.finding_count, criticalCount: row.critical_count, platformCount: row.platform_count, outcome: /partial|incomplete coverage/i.test(row.message ?? "") ? "partial" : "completed" });
 
 async function claim(): Promise<string | null> {
+  // Only one request may advance shared state at a time. Expiry permits recovery
+  // after a crashed request; fenced writes prevent that old request writing later.
   const db = getDatabase();
   await db.prepare("INSERT INTO watchtower_control(id,lease_until) VALUES('main',0) ON CONFLICT(id) DO NOTHING").run();
   const owner = crypto.randomUUID();
@@ -326,6 +335,8 @@ async function publish(scan: ScanRow, state: ScanState, verified: Finding[]) {
 }
 
 export async function advanceScan(scanId?: string) {
+  // Each call performs bounded work. The browser or an external scheduler must
+  // call again; this function does not create a background timer or scheduler.
   const db = getDatabase();
   const scan = scanId ? await db.prepare("SELECT * FROM watchtower_scans WHERE id=?").bind(scanId).first<ScanRow>() : await activeScan();
   if (!scan || scan.status === "completed") return savedFeed();
@@ -343,6 +354,8 @@ export async function advanceScan(scanId?: string) {
       else if (state.jobs?.length) await advancePlatformResearch(scan, state);
       else if (scan.stage === "orchestrator") await publish(scan, state, state.verifier ? validateResearch(state.verifier, state.candidates) : []);
       else {
+        // Compatibility path for scans saved before per-platform jobs existed.
+        // Keep it until those persisted scans no longer need to be resumed.
         if (scan.stage !== "investigator" && scan.stage !== "verifier") throw new Error("Saved scan has an unsupported stage.");
         const stage: ResearchStage = scan.stage;
         if (state[stage]) {

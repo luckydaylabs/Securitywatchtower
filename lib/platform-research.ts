@@ -5,6 +5,8 @@ import type { Finding, NimbleTrust } from "./watchtower";
 export const RESEARCH_PLATFORMS = ["macos", "windows", "linux", "ai"] as const;
 export type Candidate = Announcement & { versionId: string };
 export type ResearchJob = {
+  // Stored as scan JSON, not just UI state. "delegated" means an investigator
+  // produced multiple verification batches; "blocked" requires error handling.
   id: string; platform: Finding["platform"]; candidates: Candidate[];
   stage: ResearchStage; status: "ready" | "running" | "done" | "delegated" | "blocked";
   run?: ResearchRun; submission?: boolean; nextPollAt?: number;
@@ -40,6 +42,9 @@ export function platformJobs(items: Candidate[]): ResearchJob[] {
 }
 
 export function nextPlatformJobs(jobs: ResearchJob[]): ResearchJob[] {
+  // Select at most one job per platform; the coordinator dispatches these in
+  // parallel. Finish verification before starting more research in the same
+  // platform. A blocked job stops that platform, not the other platforms.
   return RESEARCH_PLATFORMS.flatMap(platform => {
     const lane = jobs.filter(j => j.platform === platform);
     const job = lane.find(j => j.status === "running" || j.status === "blocked")

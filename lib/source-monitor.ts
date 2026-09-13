@@ -4,6 +4,8 @@ import type { Finding } from "./watchtower";
 import { sourceTimestamp, type AnnouncementDates } from "./announcement-dates";
 
 export type Announcement = AnnouncementDates & {
+  // sourceDate is the published-or-revised selection date, not first discovery.
+  // Publisher-specific parsing supplies evidence; agents do not choose the IDs.
   id: string; sourceId: string; source: string; url: string; title: string;
   sourceDate: string; platform: Finding["platform"]; evidence: string; evidenceUrl?: string;
 };
@@ -12,6 +14,8 @@ export type SourceResult = { items: Announcement[]; etag: string | null; lastMod
 
 export const ANNOUNCEMENTS_PER_PLATFORM = 5;
 export function latestPerPlatform<T extends Announcement>(items: T[]): T[] {
+  // This is a per-platform selection, not per publisher: OpenAI and Anthropic
+  // share the AI quota. Retained history is separate and is not limited to five.
   const counts = new Map<string, number>(), seen = new Set<string>();
   return [...items].sort((a, b) => b.sourceDate.localeCompare(a.sourceDate) || a.id.localeCompare(b.id)).filter(item => {
     if (seen.has(item.id)) return false;

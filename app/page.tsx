@@ -193,6 +193,8 @@ function trustClaimExcerpt(claim: Record<string, unknown>) {
 export default function Home() {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [initialDataLoading, setInitialDataLoading] = useState(true);
+  // Skeletons cover only the initial saved-data request. Subsequent research
+  // updates retain visible findings so partial progress never blanks the dashboard.
   const [history, setHistory] = useState<SnapshotHistory[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>();
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("loading");
@@ -288,6 +290,8 @@ export default function Home() {
   }, []);
 
   const loadSavedSnapshot = useCallback(async (snapshotId?: string) => {
+    // GET restores persisted results and reconnects to an active scan. It is
+    // intentionally separate from loadFindings, which requests a manual/hourly check.
     setHistoryStatus("loading");
     setHistoryError(undefined);
     setError(undefined);
